@@ -1,3 +1,5 @@
+extern crate core;
+
 mod evaluator;
 
 pub use evaluator::{evaluate_latex_impl, EvaluateRequest};

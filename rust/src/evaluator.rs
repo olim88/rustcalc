@@ -4,8 +4,11 @@
 //! The function receives a parsed request and must return LaTeX on success,
 //! or `Err(...)` when the input cannot be evaluated.
 
-use mathlex::{parse_latex, BinaryOp, ExprKind, Expression, MathFloat, ToLatex};
+use mathlex::{
+    parse_latex, BinaryOp, ExprKind, Expression, MathConstant, MathFloat, ToLatex, UnaryOp,
+};
 use serde::{Deserialize, Serialize};
+use std::f64::consts::{E, PI};
 
 /// Input passed from the Obsidian plugin to the Rust evaluator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,11 +42,30 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
 
     if let Ok(expression) = expr {
         let output = evaluate(expression)?;
+        let output_string = output.to_latex();
 
-        return Ok(output.to_latex());
+        return Ok(round_expression(request, output_string));
     }
 
     Err(format!("unsupported expression: {formula}"))
+}
+fn round_expression(request: &EvaluateRequest, value: String) -> String {
+    let precision = if request.approximate {
+        request.precision
+    } else {
+        10
+    };
+    let n: Result<f64, _> = value.parse();
+    if let Ok(number) = n {
+        let factor = 10f64.powi(precision);
+        let mut rounded = (number * factor).round() / factor;
+        if rounded == 0.0 {
+            rounded = 0.0; // removes the negative sign
+        }
+        return rounded.to_string();
+    }
+
+    value
 }
 
 fn evaluate(expression: Expression) -> Result<Expression, String> {
@@ -51,6 +73,8 @@ fn evaluate(expression: Expression) -> Result<Expression, String> {
         ExprKind::Integer(_) | ExprKind::Float(_) => Ok(expression),
         ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right),
         ExprKind::Function { name, args } => evaluate_function(name, args),
+        ExprKind::Constant(con) => evaluate_constant(con),
+        ExprKind::Unary { op, operand } => evaluate_unary(op, *operand),
         ExprKind::Vector(vec) => {
             let mut evaluated_args = Vec::new();
             for arg in vec {
@@ -63,6 +87,43 @@ fn evaluate(expression: Expression) -> Result<Expression, String> {
             "expression kind not recognized: {:?}",
             expression.kind
         )),
+    }
+}
+
+fn evaluate_unary(op: UnaryOp, operand: Expression) -> Result<Expression, String> {
+    match op {
+        UnaryOp::Neg => Ok(evaluate_binary(BinaryOp::Sub,Expression::integer(0),operand)?),
+        UnaryOp::Pos => Ok(operand),
+        UnaryOp::Factorial => {
+			if let ExprKind::Integer(int) = operand.kind {
+				if int < 0{
+					Err("Can't factorial negative".into())
+				} else {
+					let mut total = 1;
+					for n in 0..int {
+						total *= n;
+					}
+					Ok(Expression::integer(total))
+				}
+
+			} else {
+				Err("Could not evaluate factorial number".into())
+			}
+
+		}
+        UnaryOp::Transpose => Err("Transpose not implemented".into())
+    }
+}
+
+fn evaluate_constant(constant: MathConstant) -> Result<Expression, String> {
+    match constant {
+        MathConstant::Pi => Ok(Expression::float(MathFloat::new(PI))),
+        MathConstant::E => Ok(Expression::float(MathFloat::new(E))),
+
+        MathConstant::Infinity => Ok(Expression::float(MathFloat::new(f64::INFINITY))),
+        MathConstant::NegInfinity => Ok(Expression::float(MathFloat::new(f64::NEG_INFINITY))),
+        MathConstant::NaN => Ok(Expression::float(MathFloat::new(f64::NAN))),
+        _ => Err(format!("constant not recognized: {:?}", constant)),
     }
 }
 
@@ -143,17 +204,14 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(*rhs as f64 + lhs.value())),
                 )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value() + rhs.value())),
+                )),
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-                    let evaluated = lhs
-                        .iter()
-                        .cloned()
-                        .zip(rhs.iter().cloned())
-                        .map(|(l, r)| evaluate_binary(BinaryOp::Add, l, r))
-                        .collect::<Result<Vec<_>, _>>()?;
-
-                    Ok(Expression::new(ExprKind::Vector(evaluated)))
+                    operate_on_vector(lhs, rhs, operator)
                 }
+
                 //ExprKind::Rational{numerator, denominator}  =>  Ok(Expression::new(ExprKind::Rational{numerator: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Add, left: numerator, right: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Mul, left: Box::from(left), right: denominator.clone() })) })), denominator })),
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
             }
@@ -172,6 +230,13 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() - *rhs as f64)),
                 )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value() - rhs.value())),
+                )),
+
+                (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
+                    operate_on_vector(lhs, rhs, operator)
+                }
 
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
             }
@@ -189,6 +254,9 @@ fn evaluate_binary(
                 )),
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() * *rhs as f64)),
+                )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value() * rhs.value())),
                 )),
 
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
@@ -208,6 +276,9 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() / *rhs as f64)),
                 )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value() / rhs.value())),
+                )),
 
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
             }
@@ -225,6 +296,9 @@ fn evaluate_binary(
                 )),
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value().powf(*rhs as f64))),
+                )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value().powf(rhs.value()))),
                 )),
 
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
@@ -244,6 +318,9 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() % *rhs as f64)),
                 )),
+                (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
+                    ExprKind::Float(MathFloat::new(lhs.value() % rhs.value())),
+                )),
 
                 _ => Err(format!("Operator not recognized: {:?}", operator)),
             }
@@ -251,6 +328,20 @@ fn evaluate_binary(
 
         _ => Err(format!("Operator not recognized: {:?}", operator)),
     }
+}
+
+fn operate_on_vector(
+    lhs: &Vec<Expression>,
+    rhs: &Vec<Expression>,
+    op: BinaryOp,
+) -> Result<Expression, String> {
+    let evaluated = lhs
+        .iter()
+        .cloned()
+        .zip(rhs.iter().cloned())
+        .map(|(l, r)| evaluate_binary(op, l, r))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Expression::new(ExprKind::Vector(evaluated)))
 }
 
 #[cfg(test)]
@@ -269,15 +360,30 @@ mod tests {
         assert_eq!(evaluate_latex_impl(&request).unwrap(), "3");
     }
 
-	#[test]
-	fn adds_vectors() {
-		let request = EvaluateRequest {
-			formula: r"\begin{pmatrix}1 \\2 \\3\end{pmatrix}+\begin{pmatrix}2 \\3 \\4\end{pmatrix}".into(),
-			previous_lines: vec![],
-			approximate: false,
-			precision: -1,
-		};
+    #[test]
+    fn adds_vectors() {
+        let request = EvaluateRequest {
+            formula: r"\begin{pmatrix}1 \\2 \\3\end{pmatrix}+\begin{pmatrix}2 \\3 \\4\end{pmatrix}"
+                .into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+        };
 
-		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"\begin{pmatrix} 3 \\ 5 \\ 7 \end{pmatrix}");
-	}
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"\begin{pmatrix} 3 \\ 5 \\ 7 \end{pmatrix}"
+        );
+    }
+    #[test]
+    fn functions_and_constants() {
+        let request = EvaluateRequest {
+            formula: r"\sin(2\pi)".into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+        };
+
+        assert_eq!(evaluate_latex_impl(&request).unwrap(), "0"); //todo this works but rounding?
+    }
 }
