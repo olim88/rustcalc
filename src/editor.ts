@@ -105,6 +105,7 @@ class RustCalcHintRenderer implements PluginValue {
 							previousLines,
 							approximate: isApproximation,
 							precision: settings.approxDecimalPrecision,
+							shiftForExact: settings.shiftForExact
 						});
 
 						let insertIndex =

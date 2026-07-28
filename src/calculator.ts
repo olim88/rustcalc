@@ -6,6 +6,7 @@ export interface EvaluateRequest {
 	previousLines: string[];
 	approximate: boolean;
 	precision: number;
+	shiftForExact: boolean;
 }
 
 const ERROR_LATEX = '⚡';
@@ -33,6 +34,7 @@ export function evaluateLatex(request: EvaluateRequest): string {
 				previous_lines: request.previousLines,
 				approximate: request.approximate,
 				precision: request.precision,
+				shift_for_exact: request.shiftForExact,
 			}),
 		);
 	} catch (error) {

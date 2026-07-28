@@ -6,9 +6,7 @@ export interface RustCalcSettings {
 	approxCalculationTriggerString: string;
 	approxDecimalPrecision: number;
 	completionTriggerKey: string;
-	multiplicationSymbol: string;
-	groupSeparator: string;
-	decimalSeparator: string;
+	shiftForExact: boolean;
 }
 
 export const DEFAULT_SETTINGS: RustCalcSettings = {
@@ -16,9 +14,8 @@ export const DEFAULT_SETTINGS: RustCalcSettings = {
 	approxCalculationTriggerString: '\\approx',
 	approxDecimalPrecision: 3,
 	completionTriggerKey: 'Tab',
-	multiplicationSymbol: '*',
-	groupSeparator: "'",
-	decimalSeparator: '.',
+	shiftForExact: true
+
 };
 
 export class RustCalcSettingTab extends PluginSettingTab {
@@ -80,57 +77,16 @@ export class RustCalcSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Completion trigger key')
-			.setDesc('The key that inserts the calculated result.')
-			.addText((text) =>
-				text
-					.setPlaceholder('Type name of a key here')
-					.setValue(this.plugin.settings.completionTriggerKey)
-					.onChange(async (value) => {
-						this.plugin.settings.completionTriggerKey = value;
-						await this.plugin.saveSettings();
-					}),
-			);
+			.setName('Shift for exact value')
+			.setDesc('By default only simplify answer without removing accuracy. And require shift to get a value')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.shiftForExact)
+				.onChange(async (value) => {
+					this.plugin.settings.shiftForExact = value;
+					await this.plugin.saveSettings();
+				}));
 
-		new Setting(containerEl)
-			.setName('Multiplication symbol')
-			.setDesc('The symbol used for multiplication (e.g. * or \\times).')
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a symbol here')
-					.setValue(this.plugin.settings.multiplicationSymbol)
-					.onChange(async (value) => {
-						this.plugin.settings.multiplicationSymbol = value;
-						await this.plugin.saveSettings();
-					}),
-			);
 
-		new Setting(containerEl)
-			.setName('Group separator')
-			.setDesc("The symbol used for grouping numbers (e.g. ' or ,).")
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a symbol here')
-					.setValue(this.plugin.settings.groupSeparator)
-					.onChange(async (value) => {
-						this.plugin.settings.groupSeparator = value;
-						await this.plugin.saveSettings();
-					}),
-			);
 
-		new Setting(containerEl)
-			.setName('Decimal separator')
-			.setDesc(
-				'The symbol used for defining where the decimal point is (e.g. , or .).',
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a symbol here')
-					.setValue(this.plugin.settings.decimalSeparator)
-					.onChange(async (value) => {
-						this.plugin.settings.decimalSeparator = value;
-						await this.plugin.saveSettings();
-					}),
-			);
 	}
 }

@@ -4,9 +4,7 @@
 //! The function receives a parsed request and must return LaTeX on success,
 //! or `Err(...)` when the input cannot be evaluated.
 
-use mathlex::{
-    parse_latex, BinaryOp, ExprKind, Expression, MathConstant, MathFloat, ToLatex, UnaryOp,
-};
+use mathlex::{parse_latex, parse_latex_lenient, BinaryOp, ExprKind, Expression, MathConstant, MathFloat, ToLatex, UnaryOp};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::{E, PI};
 
@@ -24,6 +22,9 @@ pub struct EvaluateRequest {
     /// Decimal precision for approximations (-1 means maximum precision).
     #[serde(default = "default_precision")]
     pub precision: i32,
+    /// Whether the user triggered approximation mode (`\approx`).
+    #[serde(default)]
+    pub shift_for_exact: bool,
 }
 
 fn default_precision() -> i32 {
@@ -38,16 +39,16 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
         return Err("empty formula".into());
     }
 
-    let expr = parse_latex(formula);
+    let expr = parse_latex_lenient(formula);
 
-    if let Ok(expression) = expr {
-        let output = evaluate(expression)?;
+    if let Some(expression) = expr.expression {
+        let output = evaluate(expression, request.shift_for_exact)?;
         let output_string = output.to_latex();
 
         return Ok(round_expression(request, output_string));
     }
 
-    Err(format!("unsupported expression: {formula}"))
+    Err(format!("unsupported expression: {formula}")) //todo output when errors are not 0
 }
 fn round_expression(request: &EvaluateRequest, value: String) -> String {
     let precision = if request.approximate {
@@ -68,17 +69,41 @@ fn round_expression(request: &EvaluateRequest, value: String) -> String {
     value
 }
 
-fn evaluate(expression: Expression) -> Result<Expression, String> {
-    match expression.kind {
+fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
+    match expression.clone().kind {
         ExprKind::Integer(_) | ExprKind::Float(_) => Ok(expression),
-        ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right),
-        ExprKind::Function { name, args } => evaluate_function(name, args),
-        ExprKind::Constant(con) => evaluate_constant(con),
-        ExprKind::Unary { op, operand } => evaluate_unary(op, *operand),
+        ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right, exact),
+        ExprKind::Function { name, args } => {
+            let output = evaluate_function(name, args, exact);
+            if let Ok(output) = output {
+                //if it's exact check to see if the function had a whole output otherwise keep the function how it was
+                if exact {
+                    if let ExprKind::Float(value) = output.kind {
+                        if (value.value() % 1.0 < 1E-6) {
+                            return Ok(Expression::integer(value.value() as i64));
+                        }
+                    }
+                    Ok(expression)
+                } else {
+                    Ok(output)
+                }
+            } else {
+                output
+            }
+        }
+        ExprKind::Constant(con) => {
+            if !exact {
+                evaluate_constant(con)
+            } else {
+                Ok(expression)
+            }
+        }
+
+        ExprKind::Unary { op, operand } => evaluate_unary(op, *operand, exact),
         ExprKind::Vector(vec) => {
             let mut evaluated_args = Vec::new();
             for arg in vec {
-                evaluated_args.push(evaluate(arg)?);
+                evaluated_args.push(evaluate(arg, exact)?);
             }
             Ok(Expression::new(ExprKind::Vector(evaluated_args)))
         }
@@ -90,28 +115,31 @@ fn evaluate(expression: Expression) -> Result<Expression, String> {
     }
 }
 
-fn evaluate_unary(op: UnaryOp, operand: Expression) -> Result<Expression, String> {
+fn evaluate_unary(op: UnaryOp, operand: Expression, exact: bool) -> Result<Expression, String> {
     match op {
-        UnaryOp::Neg => Ok(evaluate_binary(BinaryOp::Sub,Expression::integer(0),operand)?),
+        UnaryOp::Neg => Ok(evaluate_binary(
+            BinaryOp::Sub,
+            Expression::integer(0),
+            operand,
+            exact,
+        )?),
         UnaryOp::Pos => Ok(operand),
         UnaryOp::Factorial => {
-			if let ExprKind::Integer(int) = operand.kind {
-				if int < 0{
-					Err("Can't factorial negative".into())
-				} else {
-					let mut total = 1;
-					for n in 0..int {
-						total *= n;
-					}
-					Ok(Expression::integer(total))
-				}
-
-			} else {
-				Err("Could not evaluate factorial number".into())
-			}
-
-		}
-        UnaryOp::Transpose => Err("Transpose not implemented".into())
+            if let ExprKind::Integer(int) = operand.kind {
+                if int < 0 {
+                    Err("Can't factorial negative".into())
+                } else {
+                    let mut total = 1;
+                    for n in 0..int {
+                        total *= n;
+                    }
+                    Ok(Expression::integer(total))
+                }
+            } else {
+                Err("Could not evaluate factorial number".into())
+            }
+        }
+        UnaryOp::Transpose => Err("Transpose not implemented".into()),
     }
 }
 
@@ -127,10 +155,14 @@ fn evaluate_constant(constant: MathConstant) -> Result<Expression, String> {
     }
 }
 
-fn evaluate_function(name: String, args: Vec<Expression>) -> Result<Expression, String> {
+fn evaluate_function(
+    name: String,
+    args: Vec<Expression>,
+    exact: bool,
+) -> Result<Expression, String> {
     let mut evaluated_args = Vec::new();
     for arg in args {
-        evaluated_args.push(evaluate(arg)?);
+        evaluated_args.push(evaluate(arg, false)?);
     }
     //single argument functions
     if evaluated_args.len() == 1 {
@@ -188,11 +220,12 @@ fn evaluate_binary(
     operator: BinaryOp,
     left: Expression,
     right: Expression,
+    exact: bool,
 ) -> Result<Expression, String> {
     match &operator {
         BinaryOp::Add => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -209,16 +242,16 @@ fn evaluate_binary(
                 )),
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-                    operate_on_vector(lhs, rhs, operator)
+                    operate_on_vector(lhs, rhs, operator, exact)
                 }
 
                 //ExprKind::Rational{numerator, denominator}  =>  Ok(Expression::new(ExprKind::Rational{numerator: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Add, left: numerator, right: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Mul, left: Box::from(left), right: denominator.clone() })) })), denominator })),
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Sub => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -235,15 +268,15 @@ fn evaluate_binary(
                 )),
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-                    operate_on_vector(lhs, rhs, operator)
+                    operate_on_vector(lhs, rhs, operator, exact)
                 }
 
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Mul => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -259,12 +292,12 @@ fn evaluate_binary(
                     ExprKind::Float(MathFloat::new(lhs.value() * rhs.value())),
                 )),
 
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Div => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
@@ -280,12 +313,12 @@ fn evaluate_binary(
                     ExprKind::Float(MathFloat::new(lhs.value() / rhs.value())),
                 )),
 
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Pow => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -301,12 +334,12 @@ fn evaluate_binary(
                     ExprKind::Float(MathFloat::new(lhs.value().powf(rhs.value()))),
                 )),
 
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Mod => {
-            let left = evaluate(left)?;
-            let right = evaluate(right)?;
+            let left = evaluate(left, exact)?;
+            let right = evaluate(right, exact)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -322,11 +355,28 @@ fn evaluate_binary(
                     ExprKind::Float(MathFloat::new(lhs.value() % rhs.value())),
                 )),
 
-                _ => Err(format!("Operator not recognized: {:?}", operator)),
+                _ => simplify_or_error(left, right, operator, exact),
             }
         }
 
-        _ => Err(format!("Operator not recognized: {:?}", operator)),
+        _ => simplify_or_error(left, right, operator, exact),
+    }
+}
+/// show error if you can't find exact else best result when just simplifying
+fn simplify_or_error(
+    left: Expression,
+    right: Expression,
+    op: BinaryOp,
+    simplifying: bool,
+) -> Result<Expression, String> {
+    if simplifying {
+        Ok(Expression::new(ExprKind::Binary {
+            op,
+            left: Box::from(left),
+            right: Box::from(right),
+        }))
+    } else {
+        Err(format!("Operator not recognized: {:?}", op))
     }
 }
 
@@ -334,12 +384,13 @@ fn operate_on_vector(
     lhs: &Vec<Expression>,
     rhs: &Vec<Expression>,
     op: BinaryOp,
+    exact: bool,
 ) -> Result<Expression, String> {
     let evaluated = lhs
         .iter()
         .cloned()
         .zip(rhs.iter().cloned())
-        .map(|(l, r)| evaluate_binary(op, l, r))
+        .map(|(l, r)| evaluate_binary(op, l, r, exact))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Expression::new(ExprKind::Vector(evaluated)))
 }
@@ -355,6 +406,7 @@ mod tests {
             previous_lines: vec![],
             approximate: false,
             precision: -1,
+            shift_for_exact: false,
         };
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), "3");
@@ -368,6 +420,7 @@ mod tests {
             previous_lines: vec![],
             approximate: false,
             precision: -1,
+            shift_for_exact: false,
         };
 
         assert_eq!(
@@ -382,6 +435,7 @@ mod tests {
             previous_lines: vec![],
             approximate: false,
             precision: -1,
+            shift_for_exact: false,
         };
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), "0"); //todo this works but rounding?
