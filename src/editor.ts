@@ -1,5 +1,5 @@
-import { syntaxTree } from '@codemirror/language';
-import { RangeSetBuilder } from '@codemirror/state';
+import {syntaxTree} from '@codemirror/language';
+import {RangeSetBuilder} from '@codemirror/state';
 import {
 	Decoration,
 	DecorationSet,
@@ -9,9 +9,9 @@ import {
 	ViewPlugin,
 	ViewUpdate,
 } from '@codemirror/view';
-import { evaluateLatex } from './calculator';
+import {evaluateLatex} from './calculator';
 import RustCalcPlugin from './main';
-import { ResultWidget } from './widget';
+import {ResultWidget} from './widget';
 
 class RustCalcHintRenderer implements PluginValue {
 	decorations: DecorationSet;
@@ -24,14 +24,16 @@ class RustCalcHintRenderer implements PluginValue {
 		this.decorations = this.buildDecorations(_update.view);
 	}
 
-	destroy() {}
+	destroy() {
+	}
 
 	buildDecorations(view: EditorView): DecorationSet {
 		const builder = new RangeSetBuilder<Decoration>();
 
-		for (const { from, to } of view.visibleRanges) {
+		for (const {from, to} of view.visibleRanges) {
 			const cursorPos = view.state.selection.main.from;
 			let mathBegin: number | null = null;
+			let previousLines: string[] = [];
 
 			syntaxTree(view.state).iterate({
 				from,
@@ -46,25 +48,18 @@ class RustCalcHintRenderer implements PluginValue {
 					) {
 						const mathEnd = node.from;
 
-						if (cursorPos < mathBegin || mathEnd < cursorPos) return;
-						const relativeCursorPos = cursorPos - mathBegin;
 
 						const latexContentLines = view.state
-							.sliceDoc(mathBegin, mathEnd)
-							.split('\n');
-						const focusedLatexLine =
-							latexContentLines.find(
-								(_line, i) =>
-									relativeCursorPos <
-									latexContentLines.slice(0, i + 1).join('\n').length + 1,
-							) ?? '';
-						const trimmedLatexLine = focusedLatexLine
-							.replace('\\\\', '')
+							.sliceDoc(mathBegin, mathEnd);
+
+						const trimmedLatexLine = latexContentLines.split('\n').join("")
 							.trim();
-						const previousLatexLines = latexContentLines.slice(
-							0,
-							latexContentLines.indexOf(focusedLatexLine),
-						);
+
+						if (cursorPos < mathBegin || mathEnd < cursorPos) {
+							//if the line is before the current equation keep it to possible use variables
+							previousLines.push(trimmedLatexLine)
+							return;
+						}
 
 						const settings = RustCalcPlugin.INSTANCE.settings;
 
@@ -87,7 +82,7 @@ class RustCalcHintRenderer implements PluginValue {
 							settings.approxCalculationTriggerString,
 						);
 
-						const splitFormula = focusedLatexLine
+						const splitFormula = trimmedLatexLine
 							.split(calcTrigger)
 							.filter(
 								(part) => part.replace('\\\\', '').trim().length > 0,
@@ -95,10 +90,6 @@ class RustCalcHintRenderer implements PluginValue {
 						const formula = splitFormula[splitFormula.length - 1];
 						if (!formula) return;
 
-
-						const previousLines = previousLatexLines.map((line) =>
-							line.replace('\\\\', '').replace('&', '').trim(),
-						);
 
 						const result = evaluateLatex({
 							formula: formula,
@@ -110,9 +101,8 @@ class RustCalcHintRenderer implements PluginValue {
 
 						let insertIndex =
 							mathBegin +
-							previousLatexLines.join('\n').length +
-							focusedLatexLine.trimEnd().length;
-						if (previousLatexLines.length > 0) insertIndex += 1;
+							latexContentLines.trimEnd().length;
+
 
 						builder.add(
 							insertIndex,

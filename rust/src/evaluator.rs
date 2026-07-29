@@ -4,16 +4,22 @@
 //! The function receives a parsed request and must return LaTeX on success,
 //! or `Err(...)` when the input cannot be evaluated.
 
-use mathlex::{parse_latex, parse_latex_lenient, BinaryOp, ExprKind, Expression, MathConstant, MathFloat, ToLatex, UnaryOp};
+use mathlex::ExprKind::Exists;
+use mathlex::{
+    parse_latex, parse_latex_equation_system, parse_latex_lenient, parse_system, BinaryOp,
+    ExprKind, Expression, MathConstant, MathFloat, ParseResult, ToLatex, UnaryOp,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::f64::consts::{E, PI};
+use std::iter::Map;
 
 /// Input passed from the Obsidian plugin to the Rust evaluator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluateRequest {
     /// The LaTeX expression to evaluate (trigger suffix already removed).
     pub formula: String,
-    /// Earlier lines in the same math block (for variable definitions).
+    /// Earlier lines  (for variable definitions).
     #[serde(default)]
     pub previous_lines: Vec<String>,
     /// Whether the user triggered approximation mode (`\approx`).
@@ -38,11 +44,14 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
     if formula.is_empty() {
         return Err("empty formula".into());
     }
+    //find veriables from previces lines
+
+    let vars: HashMap<String, Expression> = exstract_vars(&request.previous_lines);
 
     let expr = parse_latex_lenient(formula);
 
     if let Some(expression) = expr.expression {
-        let output = evaluate(expression, request.shift_for_exact)?;
+        let output = evaluate(expression, request.shift_for_exact, &vars)?;
         let output_string = output.to_latex();
 
         return Ok(round_expression(request, output_string));
@@ -50,7 +59,29 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
 
     Err(format!("unsupported expression: {formula}")) //todo output when errors are not 0
 }
-fn round_expression(request: &EvaluateRequest, value: String) -> String { //todo round vectors etc
+
+/// Looks at previous equations in the document and if any of them are defining a constant save them for later use
+fn exstract_vars(lines: &Vec<String>) -> HashMap<String, Expression> {
+    let vars_equations = parse_latex_equation_system(lines.join(";").as_str());
+    match vars_equations {
+        Ok(exps) => {
+            let mut vars = HashMap::new();
+            for exp in exps {
+                if let ExprKind::Equation { left, right } = exp.kind {
+                    if let ExprKind::Variable(var) = left.kind {
+                        vars.insert(var, *right);
+                    }
+                }
+            }
+
+            vars
+        }
+        Err(_) => HashMap::default(),
+    }
+}
+
+fn round_expression(request: &EvaluateRequest, value: String) -> String {
+    //todo round vectors etc
     let precision = if request.approximate {
         request.precision
     } else {
@@ -69,12 +100,16 @@ fn round_expression(request: &EvaluateRequest, value: String) -> String { //todo
     value
 }
 
-fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
+fn evaluate(
+    expression: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
     match expression.clone().kind {
         ExprKind::Integer(_) | ExprKind::Float(_) => Ok(expression),
-        ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right, exact),
+        ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right, exact, vars),
         ExprKind::Function { name, args } => {
-            let output = evaluate_function(name, args, exact);
+            let output = evaluate_function(name, args, exact, vars);
             if let Ok(output) = output {
                 //if it's exact check to see if the function had a whole output otherwise keep the function how it was
                 if exact {
@@ -91,7 +126,11 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
                 output
             }
         }
-		ExprKind::CrossProduct { left, right } => evaluate_cross_product(left, right, exact),
+        ExprKind::CrossProduct { left, right } => evaluate_cross_product(left, right, exact, vars),
+        ExprKind::Gradient { expr } => evaluate_gradient(*expr, exact, vars),
+        ExprKind::Curl { field } => evaluate_curl(*field, exact, vars),
+        ExprKind::Derivative { expr, var, order } => Ok(expression), //todo method for derivatives
+        ExprKind::Differential { var } => Ok(expression),            //todo method for Differential
         ExprKind::Constant(con) => {
             if !exact {
                 evaluate_constant(con)
@@ -99,18 +138,12 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
                 Ok(expression)
             }
         }
-		ExprKind::Variable(name) => {
-			if !exact {
-				Ok(expression) //todo try to find it or something?
-			}else{
-				Ok(expression)
-			}
-		}
-        ExprKind::Unary { op, operand } => evaluate_unary(op, *operand, exact),
+        ExprKind::Variable(name) => evaluate_variable(&name, exact, vars),
+        ExprKind::Unary { op, operand } => evaluate_unary(op, *operand, exact, vars),
         ExprKind::Vector(vec) => {
             let mut evaluated_args = Vec::new();
             for arg in vec {
-                evaluated_args.push(evaluate(arg, exact)?);
+                evaluated_args.push(evaluate(arg, exact, vars)?);
             }
             Ok(Expression::new(ExprKind::Vector(evaluated_args)))
         }
@@ -122,36 +155,152 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
     }
 }
 
-fn evaluate_cross_product(left: Box<Expression>, right: Box<Expression>, exact: bool) -> Result<Expression, String> {
-	let left = evaluate(*left, exact)?;
-	let right = evaluate(*right, exact)?;
-	match (&left.kind, &right.kind) {
-		//just use normal multiplication on numbers
-		(ExprKind::Integer(_) | ExprKind::Float(_), ExprKind::Integer(_)| ExprKind::Float(_)) => evaluate_binary(BinaryOp::Mul, left, right, exact),
-
-		(ExprKind::Vector(v1), ExprKind::Vector(v2)) => {
-			if v1.len() == 3 && v2.len() == 3 {
-				let mut output = Vec::new();
-				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[2].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[1].clone(), exact)?, exact)?);
-				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[0].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[2].clone(), exact)?, exact)?);
-				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[1].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[0].clone(), exact)?, exact)?);
-
-				Ok(Expression::new(ExprKind::Vector(output)))
-			}else {
-				Err("Cross product only works on vectors of length 3".into())
-			}
-		}
-		_ => Err("Cross product does not exist for this data type".into()),
-	}
+fn evaluate_variable(
+    name: &String,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    match vars.get(name) {
+        Some(exp) => Ok(evaluate(exp.clone(), true, &vars)?),
+        None => Ok(Expression::new(ExprKind::Variable(name.clone()))),
+    }
 }
 
-fn evaluate_unary(op: UnaryOp, operand: Expression, exact: bool) -> Result<Expression, String> {
+/// Evaluate grad of an expression. Assumes that we are in Cartesian coords
+fn evaluate_gradient(
+    expression: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let mut elements = Vec::new();
+    let expression = evaluate(expression, exact, &vars)?;
+    elements.push(evaluate(
+        Expression::new(ExprKind::Derivative {
+            expr: Box::from(expression.clone()),
+            var: String::from("x"),
+            order: 1,
+        }),
+        exact,
+        &vars,
+    )?);
+    elements.push(evaluate(
+        Expression::new(ExprKind::Derivative {
+            expr: Box::from(expression.clone()),
+            var: String::from("y"),
+            order: 1,
+        }),
+        exact,
+        &vars,
+    )?);
+    elements.push(evaluate(
+        Expression::new(ExprKind::Derivative {
+            expr: Box::from(expression.clone()),
+            var: String::from("z"),
+            order: 1,
+        }),
+        exact,
+        &vars,
+    )?);
+
+    Ok(Expression::vector(elements))
+}
+/// Evaluate curl of a vector. Assumes that we are in Cartesian coords
+fn evaluate_curl(
+    expression: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    if let ExprKind::Vector(vec) = expression.clone().kind {
+
+		let mut output = Vec::new();
+		output.push(evaluate_binary(
+			BinaryOp::Sub,
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),var: String::from("y"), order: 1}.into(),
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),var: String::from("z"), order: 1}.into(),
+			exact,
+			vars,
+		)?);
+		output.push(evaluate_binary(
+			BinaryOp::Sub,
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),var: String::from("z"), order: 1}.into(),
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),var: String::from("x"), order: 1}.into(),
+		    exact,
+		    vars,
+		)?);
+		output.push(evaluate_binary(
+			BinaryOp::Sub,
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),var: String::from("x"), order: 1}.into(),
+			ExprKind::Derivative {expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),var: String::from("y"), order: 1}.into(),
+		    exact,
+		    vars,
+		)?);
+		Ok(Expression::vector(output))
+    } else {
+        Err("expression dose not support curl".to_string())
+    }
+}
+
+fn evaluate_cross_product(
+    left: Box<Expression>,
+    right: Box<Expression>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let left = evaluate(*left, exact, vars)?;
+    let right = evaluate(*right, exact, vars)?;
+    match (&left.kind, &right.kind) {
+        //just use normal multiplication on numbers
+        (ExprKind::Integer(_) | ExprKind::Float(_), ExprKind::Integer(_) | ExprKind::Float(_)) => {
+            evaluate_binary(BinaryOp::Mul, left, right, exact, vars)
+        }
+
+        (ExprKind::Vector(v1), ExprKind::Vector(v2)) => {
+            if v1.len() == 3 && v2.len() == 3 {
+                let mut output = Vec::new();
+                output.push(evaluate_binary(
+                    BinaryOp::Sub,
+                    evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[2].clone(), exact, vars)?,
+                    evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[1].clone(), exact, vars)?,
+                    exact,
+                    vars,
+                )?);
+                output.push(evaluate_binary(
+                    BinaryOp::Sub,
+                    evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[0].clone(), exact, vars)?,
+                    evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[2].clone(), exact, vars)?,
+                    exact,
+                    vars,
+                )?);
+                output.push(evaluate_binary(
+                    BinaryOp::Sub,
+                    evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[1].clone(), exact, vars)?,
+                    evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[0].clone(), exact, vars)?,
+                    exact,
+                    vars,
+                )?);
+
+                Ok(Expression::new(ExprKind::Vector(output)))
+            } else {
+                Err("Cross product only works on vectors of length 3".into())
+            }
+        }
+        _ => Err("Cross product does not exist for this data type".into()),
+    }
+}
+
+fn evaluate_unary(
+    op: UnaryOp,
+    operand: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
     match op {
         UnaryOp::Neg => Ok(evaluate_binary(
             BinaryOp::Sub,
             Expression::integer(0),
             operand,
             exact,
+            vars,
         )?),
         UnaryOp::Pos => Ok(operand),
         UnaryOp::Factorial => {
@@ -189,10 +338,11 @@ fn evaluate_function(
     name: String,
     args: Vec<Expression>,
     exact: bool,
+    vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
     let mut evaluated_args = Vec::new();
     for arg in args {
-        evaluated_args.push(evaluate(arg, false)?);
+        evaluated_args.push(evaluate(arg, false, vars)?);
     }
     //single argument functions
     if evaluated_args.len() == 1 {
@@ -251,11 +401,12 @@ fn evaluate_binary(
     left: Expression,
     right: Expression,
     exact: bool,
+    vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
     match &operator {
         BinaryOp::Add => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -272,7 +423,7 @@ fn evaluate_binary(
                 )),
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-                    operate_on_vector(lhs, rhs, operator, exact)
+                    operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
 
                 //ExprKind::Rational{numerator, denominator}  =>  Ok(Expression::new(ExprKind::Rational{numerator: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Add, left: numerator, right: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Mul, left: Box::from(left), right: denominator.clone() })) })), denominator })),
@@ -280,8 +431,8 @@ fn evaluate_binary(
             }
         }
         BinaryOp::Sub => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -298,15 +449,15 @@ fn evaluate_binary(
                 )),
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-                    operate_on_vector(lhs, rhs, operator, exact)
+                    operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Mul => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -322,24 +473,34 @@ fn evaluate_binary(
                     ExprKind::Float(MathFloat::new(lhs.value() * rhs.value())),
                 )),
 
-				(ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
-					operate_on_vector(lhs, rhs, operator, exact)
-				}
-				(ExprKind::Integer(_), ExprKind::Vector(vec)) | (ExprKind::Float(_), ExprKind::Vector(vec))=> {
-					let new = vec.into_iter().cloned().map(|i| evaluate_binary(BinaryOp::Mul, left.clone(), i, exact)) .collect::<Result<Vec<_>, _>>()?;
-					Ok(Expression::new(ExprKind::Vector(new)))
-				}
-				(ExprKind::Vector(vec),ExprKind::Integer(_))| (ExprKind::Vector(vec),ExprKind::Float(_))=> {
-					let new = vec.into_iter().cloned().map(|i| evaluate_binary(BinaryOp::Mul, i, right.clone(), exact)) .collect::<Result<Vec<_>, _>>()?;
-					Ok(Expression::new(ExprKind::Vector(new)))
-				}
+                (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
+                    operate_on_vector(lhs, rhs, operator, exact, vars)
+                }
+                (ExprKind::Integer(_), ExprKind::Vector(vec))
+                | (ExprKind::Float(_), ExprKind::Vector(vec)) => {
+                    let new = vec
+                        .into_iter()
+                        .cloned()
+                        .map(|i| evaluate_binary(BinaryOp::Mul, left.clone(), i, exact, vars))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Expression::new(ExprKind::Vector(new)))
+                }
+                (ExprKind::Vector(vec), ExprKind::Integer(_))
+                | (ExprKind::Vector(vec), ExprKind::Float(_)) => {
+                    let new = vec
+                        .into_iter()
+                        .cloned()
+                        .map(|i| evaluate_binary(BinaryOp::Mul, i, right.clone(), exact, vars))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Expression::new(ExprKind::Vector(new)))
+                }
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
         }
         BinaryOp::Div => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => Ok(Expression::new(
@@ -359,8 +520,8 @@ fn evaluate_binary(
             }
         }
         BinaryOp::Pow => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -380,8 +541,8 @@ fn evaluate_binary(
             }
         }
         BinaryOp::Mod => {
-            let left = evaluate(left, exact)?;
-            let right = evaluate(right, exact)?;
+            let left = evaluate(left, exact, vars)?;
+            let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
@@ -427,12 +588,13 @@ fn operate_on_vector(
     rhs: &Vec<Expression>,
     op: BinaryOp,
     exact: bool,
+    vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
     let evaluated = lhs
         .iter()
         .cloned()
         .zip(rhs.iter().cloned())
-        .map(|(l, r)| evaluate_binary(op, l, r, exact))
+        .map(|(l, r)| evaluate_binary(op, l, r, exact, vars))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Expression::new(ExprKind::Vector(evaluated)))
 }
@@ -482,9 +644,9 @@ mod tests {
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), "0");
     }
-	#[test]
-	fn text_cross_product_and_variables() {
-		let request = EvaluateRequest {
+    #[test]
+    fn text_cross_product_and_variables() {
+        let request = EvaluateRequest {
 			formula: r"\begin{pmatrix}a_{1} \\  a_{2} \\  a_{3} \end{pmatrix}\times \begin{pmatrix}b_{1} \\  b_{2} \\  b_{3}\end{pmatrix}"
 				.into(),
 			previous_lines: vec![],
@@ -493,9 +655,34 @@ mod tests {
 			shift_for_exact: true,
 		};
 
-		assert_eq!(
-			evaluate_latex_impl(&request).unwrap(),
-			r"\begin{pmatrix} a_2 \cdot b_3 - a_3 \cdot b_2 \\ a_3 \cdot b_1 - a_1 \cdot b_3 \\ a_1 \cdot b_2 - a_2 \cdot b_1 \end{pmatrix}"
-		);
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"\begin{pmatrix} a_2 \cdot b_3 - a_3 \cdot b_2 \\ a_3 \cdot b_1 - a_1 \cdot b_3 \\ a_1 \cdot b_2 - a_2 \cdot b_1 \end{pmatrix}"
+        );
+    }
+
+    #[test]
+    fn variables_with_definitions() {
+        let request = EvaluateRequest {
+            formula: r"x".into(),
+            previous_lines: vec!["x=5+2".into()],
+            approximate: false,
+            precision: -1,
+            shift_for_exact: false,
+        };
+
+        assert_eq!(evaluate_latex_impl(&request).unwrap(), "7");
+    }
+	#[test]
+	fn curl_operator_cartesian() {
+		let request = EvaluateRequest {
+			formula: r"\nabla \times \begin{pmatrix}F_{1} \\  F_{2} \\  F_{3}\end{pmatrix}".into(),
+			previous_lines: vec![],
+			approximate: false,
+			precision: -1,
+			shift_for_exact: true,
+		};
+
+		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"\begin{pmatrix} \frac{d}{dy}F_3 - \frac{d}{dz}F_2 \\ \frac{d}{dz}F_1 - \frac{d}{dx}F_3 \\ \frac{d}{dx}F_2 - \frac{d}{dy}F_1 \end{pmatrix}");
 	}
 }
