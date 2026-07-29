@@ -50,7 +50,7 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
 
     Err(format!("unsupported expression: {formula}")) //todo output when errors are not 0
 }
-fn round_expression(request: &EvaluateRequest, value: String) -> String {
+fn round_expression(request: &EvaluateRequest, value: String) -> String { //todo round vectors etc
     let precision = if request.approximate {
         request.precision
     } else {
@@ -91,6 +91,7 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
                 output
             }
         }
+		ExprKind::CrossProduct { left, right } => evaluate_cross_product(left, right, exact),
         ExprKind::Constant(con) => {
             if !exact {
                 evaluate_constant(con)
@@ -98,7 +99,13 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
                 Ok(expression)
             }
         }
-
+		ExprKind::Variable(name) => {
+			if !exact {
+				Ok(expression) //todo try to find it or something?
+			}else{
+				Ok(expression)
+			}
+		}
         ExprKind::Unary { op, operand } => evaluate_unary(op, *operand, exact),
         ExprKind::Vector(vec) => {
             let mut evaluated_args = Vec::new();
@@ -113,6 +120,29 @@ fn evaluate(expression: Expression, exact: bool) -> Result<Expression, String> {
             expression.kind
         )),
     }
+}
+
+fn evaluate_cross_product(left: Box<Expression>, right: Box<Expression>, exact: bool) -> Result<Expression, String> {
+	let left = evaluate(*left, exact)?;
+	let right = evaluate(*right, exact)?;
+	match (&left.kind, &right.kind) {
+		//just use normal multiplication on numbers
+		(ExprKind::Integer(_) | ExprKind::Float(_), ExprKind::Integer(_)| ExprKind::Float(_)) => evaluate_binary(BinaryOp::Mul, left, right, exact),
+
+		(ExprKind::Vector(v1), ExprKind::Vector(v2)) => {
+			if v1.len() == 3 && v2.len() == 3 {
+				let mut output = Vec::new();
+				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[2].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[1].clone(), exact)?, exact)?);
+				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[2].clone(), v2[0].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[2].clone(), exact)?, exact)?);
+				output.push(evaluate_binary(BinaryOp::Sub, evaluate_binary(BinaryOp::Mul, v1[0].clone(), v2[1].clone(), exact)?, evaluate_binary(BinaryOp::Mul, v1[1].clone(), v2[0].clone(), exact)?, exact)?);
+
+				Ok(Expression::new(ExprKind::Vector(output)))
+			}else {
+				Err("Cross product only works on vectors of length 3".into())
+			}
+		}
+		_ => Err("Cross product does not exist for this data type".into()),
+	}
 }
 
 fn evaluate_unary(op: UnaryOp, operand: Expression, exact: bool) -> Result<Expression, String> {
@@ -291,6 +321,18 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() * rhs.value())),
                 )),
+
+				(ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
+					operate_on_vector(lhs, rhs, operator, exact)
+				}
+				(ExprKind::Integer(_), ExprKind::Vector(vec)) | (ExprKind::Float(_), ExprKind::Vector(vec))=> {
+					let new = vec.into_iter().cloned().map(|i| evaluate_binary(BinaryOp::Mul, left.clone(), i, exact)) .collect::<Result<Vec<_>, _>>()?;
+					Ok(Expression::new(ExprKind::Vector(new)))
+				}
+				(ExprKind::Vector(vec),ExprKind::Integer(_))| (ExprKind::Vector(vec),ExprKind::Float(_))=> {
+					let new = vec.into_iter().cloned().map(|i| evaluate_binary(BinaryOp::Mul, i, right.clone(), exact)) .collect::<Result<Vec<_>, _>>()?;
+					Ok(Expression::new(ExprKind::Vector(new)))
+				}
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
