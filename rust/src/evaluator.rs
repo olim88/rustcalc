@@ -129,8 +129,10 @@ fn evaluate(
         ExprKind::CrossProduct { left, right } => evaluate_cross_product(left, right, exact, vars),
         ExprKind::Gradient { expr } => evaluate_gradient(*expr, exact, vars),
         ExprKind::Curl { field } => evaluate_curl(*field, exact, vars),
-        ExprKind::Derivative { expr, var, order } => Ok(expression), //todo method for derivatives
-        ExprKind::Differential { var } => Ok(expression),            //todo method for Differential
+        ExprKind::Derivative { expr, var, order } => {
+            evaluate_derivative(expr, &var, order, exact, vars)
+        } //todo method for derivatives
+        ExprKind::Differential { var } => Ok(expression), //todo method for Differential
         ExprKind::Constant(con) => {
             if !exact {
                 evaluate_constant(con)
@@ -153,6 +155,95 @@ fn evaluate(
             expression.kind
         )),
     }
+}
+
+fn evaluate_derivative(
+    expression: Box<Expression>,
+    var: &String,
+    order: u32,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let expression = evaluate(*expression, exact, vars)?;
+    //if does not contain variable it will be 0 (if a variable is un definned it could be dependent on var so this only works for
+    if expression.find_variables().is_empty() {
+        Ok(Expression::integer(0))
+    } else if let ExprKind::Binary { op, left, right } = expression.clone().kind {
+        //split terms and differentiate them individually
+        if op == BinaryOp::Add || op == BinaryOp::Sub {
+            evaluate_binary(
+                op,
+                evaluate_derivative(left, &var, order, exact, vars)?,
+                evaluate_derivative(right, &var, order, exact, vars)?,
+                exact,
+                vars,
+            )
+        } else if op == BinaryOp::Pow && !right.contains_variable(var) {
+            let power = right;
+            Ok(derivative(*left, *power, exact, vars)?)
+        } else if op == BinaryOp::Mul && !left.contains_variable(var) {
+            Ok(evaluate_binary(
+                BinaryOp::Mul,
+                *left,
+                evaluate_derivative(right, &var, order, exact, vars)?,
+                exact,
+                vars,
+            )?)
+        } else {
+            Ok(ExprKind::Derivative {
+                expr: Box::from(expression),
+                var: var.clone(),
+                order,
+            }
+            .into())
+        }
+    } else if let ExprKind::Variable(var2) = expression.clone().kind {
+        if *var == var2 {
+            Ok(derivative(expression, Expression::integer(1), exact, vars)?)
+        } else {
+            Ok(ExprKind::Derivative {
+                expr: Box::from(expression),
+                var: var.clone(),
+                order,
+            }
+            .into())
+        }
+    } else {
+        if !exact {
+            Err(format!(
+                "Can't find {} deriviatve of: {:?}",
+                var, expression.kind
+            ))
+        } else {
+            Ok(ExprKind::Derivative {
+                expr: Box::from(expression),
+                var: var.clone(),
+                order,
+            }
+            .into())
+        }
+    }
+}
+
+fn derivative(
+    term: Expression,
+    power: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    evaluate_binary(
+        BinaryOp::Mul,
+        power.clone(),
+        evaluate_binary(
+            BinaryOp::Pow,
+            term,
+            evaluate_binary(BinaryOp::Sub, power, Expression::integer(1), exact, vars)?,
+            exact,
+            vars,
+        )?,
+        exact,
+        vars,
+    )
 }
 
 fn evaluate_variable(
@@ -211,30 +302,59 @@ fn evaluate_curl(
     vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
     if let ExprKind::Vector(vec) = expression.clone().kind {
-
-		let mut output = Vec::new();
-		output.push(evaluate_binary(
-			BinaryOp::Sub,
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),var: String::from("y"), order: 1}.into(),
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),var: String::from("z"), order: 1}.into(),
-			exact,
-			vars,
-		)?);
-		output.push(evaluate_binary(
-			BinaryOp::Sub,
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),var: String::from("z"), order: 1}.into(),
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),var: String::from("x"), order: 1}.into(),
-		    exact,
-		    vars,
-		)?);
-		output.push(evaluate_binary(
-			BinaryOp::Sub,
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),var: String::from("x"), order: 1}.into(),
-			ExprKind::Derivative {expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),var: String::from("y"), order: 1}.into(),
-		    exact,
-		    vars,
-		)?);
-		Ok(Expression::vector(output))
+        let mut output = Vec::new();
+        output.push(evaluate_binary(
+            BinaryOp::Sub,
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),
+                var: String::from("y"),
+                order: 1,
+            }
+            .into(),
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),
+                var: String::from("z"),
+                order: 1,
+            }
+            .into(),
+            exact,
+            vars,
+        )?);
+        output.push(evaluate_binary(
+            BinaryOp::Sub,
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),
+                var: String::from("z"),
+                order: 1,
+            }
+            .into(),
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[2].clone(), exact, vars)?),
+                var: String::from("x"),
+                order: 1,
+            }
+            .into(),
+            exact,
+            vars,
+        )?);
+        output.push(evaluate_binary(
+            BinaryOp::Sub,
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[1].clone(), exact, vars)?),
+                var: String::from("x"),
+                order: 1,
+            }
+            .into(),
+            ExprKind::Derivative {
+                expr: Box::from(evaluate(vec[0].clone(), exact, vars)?),
+                var: String::from("y"),
+                order: 1,
+            }
+            .into(),
+            exact,
+            vars,
+        )?);
+        Ok(Expression::vector(output))
     } else {
         Err("expression dose not support curl".to_string())
     }
@@ -279,7 +399,7 @@ fn evaluate_cross_product(
                     vars,
                 )?);
 
-                Ok(Expression::new(ExprKind::Vector(output)))
+                Ok(Expression::vector(output))
             } else {
                 Err("Cross product only works on vectors of length 3".into())
             }
@@ -353,43 +473,19 @@ fn evaluate_function(
         };
 
         return match name.as_str() {
-            "cos" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.cos(),
-            )))),
-            "acos" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.acos(),
-            )))),
-            "cosh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.cosh(),
-            )))),
-            "acosh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.acosh(),
-            )))),
-            "sin" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.sin(),
-            )))),
-            "asin" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.asin(),
-            )))),
-            "sinh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.sinh(),
-            )))),
-            "asinh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.asinh(),
-            )))),
-            "tan" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.tan(),
-            )))),
-            "atan" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.atan(),
-            )))),
-            "tanh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.tanh(),
-            )))),
-            "atanh" => Ok(Expression::new(ExprKind::Float(MathFloat::new(
-                value.atanh(),
-            )))),
-            "log" | "ln" => Ok(Expression::new(ExprKind::Float(MathFloat::new(value.ln())))),
+            "cos" => Ok(ExprKind::Float(MathFloat::new(value.cos())).into()),
+            "acos" => Ok(ExprKind::Float(MathFloat::new(value.acos())).into()),
+            "cosh" => Ok(ExprKind::Float(MathFloat::new(value.cosh())).into()),
+            "acosh" => Ok(ExprKind::Float(MathFloat::new(value.acosh())).into()),
+            "sin" => Ok(ExprKind::Float(MathFloat::new(value.sin())).into()),
+            "asin" => Ok(ExprKind::Float(MathFloat::new(value.asin())).into()),
+            "sinh" => Ok(ExprKind::Float(MathFloat::new(value.sinh())).into()),
+            "asinh" => Ok(ExprKind::Float(MathFloat::new(value.asinh())).into()),
+            "tan" => Ok(ExprKind::Float(MathFloat::new(value.tan())).into()),
+            "atan" => Ok(ExprKind::Float(MathFloat::new(value.atan())).into()),
+            "tanh" => Ok(ExprKind::Float(MathFloat::new(value.tanh())).into()),
+            "atanh" => Ok(ExprKind::Float(MathFloat::new(value.atanh())).into()),
+            "log" | "ln" => Ok(ExprKind::Float(MathFloat::new(value.ln())).into()),
             _ => return Err("Function called with non-function name".to_owned()),
         };
     }
@@ -425,8 +521,9 @@ fn evaluate_binary(
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
                     operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
+                (lhs, _) if is_zero(lhs) => Ok(right),
+                (_, rhs) if is_zero(rhs) => Ok(left),
 
-                //ExprKind::Rational{numerator, denominator}  =>  Ok(Expression::new(ExprKind::Rational{numerator: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Add, left: numerator, right: Box::from(Expression::new(ExprKind::Binary { op: BinaryOp::Mul, left: Box::from(left), right: denominator.clone() })) })), denominator })),
                 _ => simplify_or_error(left, right, operator, exact),
             }
         }
@@ -451,6 +548,7 @@ fn evaluate_binary(
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
                     operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
+                (_, rhs) if is_zero(rhs) => Ok(left),
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
@@ -460,8 +558,9 @@ fn evaluate_binary(
             let right = evaluate(right, exact, vars)?;
 
             match (&left.kind, &right.kind) {
+                //basic values
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
-                    Ok(Expression::new(ExprKind::Integer(lhs * rhs)))
+                    Ok(ExprKind::Integer(lhs * rhs).into())
                 }
                 (ExprKind::Integer(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(*lhs as f64 * rhs.value())),
@@ -472,10 +571,11 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() * rhs.value())),
                 )),
-
+                //vector dot product
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
                     operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
+                // vector by constant
                 (ExprKind::Integer(_), ExprKind::Vector(vec))
                 | (ExprKind::Float(_), ExprKind::Vector(vec)) => {
                     let new = vec
@@ -494,8 +594,39 @@ fn evaluate_binary(
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Expression::new(ExprKind::Vector(new)))
                 }
+                //multiplying by 0 is 0
+                (lhs, _) if is_zero(lhs) => Ok(Expression::integer(0)),
+                (_, rhs) if is_zero(rhs) => Ok(Expression::integer(0)),
 
-                _ => simplify_or_error(left, right, operator, exact),
+                //if multiplying by another multiplication try to simplify by multiplying first value only. Is this good? or just a bodge
+                (
+                    _,
+					ExprKind::Binary {
+						op,
+						left: sub_left,
+						right: sub_right,
+					}
+                ) if *op == BinaryOp::Mul => Ok(ExprKind::Binary {
+                    op: BinaryOp::Mul,
+                    left: Box::from(evaluate_binary(
+                        BinaryOp::Mul,
+                        left.clone(),
+                        *sub_left.clone(),
+                        exact,
+                        vars,
+                    )?),
+                    right: Box::from(*sub_right.clone()),
+                }
+                .into()),
+
+                //if the same simplify using power of 2 else leave it
+                (lhs, rhs) => {
+                    if lhs.eq(rhs) {
+                        evaluate_binary(BinaryOp::Pow, left, Expression::integer(2), exact, vars)
+                    } else {
+                        simplify_or_error(left, right, operator, exact)
+                    }
+                }
             }
         }
         BinaryOp::Div => {
@@ -515,6 +646,8 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value() / rhs.value())),
                 )),
+                (lhs, _) if is_zero(lhs) => Ok(Expression::integer(0)),
+                (_, rhs) if is_zero(rhs) => Err("Can't divide by zero".to_owned()),
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
@@ -525,7 +658,7 @@ fn evaluate_binary(
 
             match (&left.kind, &right.kind) {
                 (ExprKind::Integer(lhs), ExprKind::Integer(rhs)) => {
-                    Ok(Expression::new(ExprKind::Integer(lhs.pow(*rhs as u32))))
+                    Ok(Expression::integer(lhs.pow(*rhs as u32)))
                 }
                 (ExprKind::Integer(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new((*lhs as f64).powf(rhs.value()))),
@@ -536,6 +669,30 @@ fn evaluate_binary(
                 (ExprKind::Float(lhs), ExprKind::Float(rhs)) => Ok(Expression::new(
                     ExprKind::Float(MathFloat::new(lhs.value().powf(rhs.value()))),
                 )),
+
+                (_, rhs) if is_zero(rhs) => Ok(Expression::integer(1)),
+                (_, ExprKind::Integer(rhs)) if *rhs == 1 => Ok(left),
+
+                //simplify powers of powers
+                (
+                    ExprKind::Binary {
+                        op,
+                        left: sub_left,
+                        right: sub_right,
+                    },
+                    _,
+                ) if *op == BinaryOp::Pow => Ok(ExprKind::Binary {
+                    op: BinaryOp::Pow,
+                    left: sub_left.clone(),
+                    right: Box::from(evaluate_binary(
+                        BinaryOp::Mul,
+                        *sub_right.clone(),
+                        right,
+                        exact,
+                        vars,
+                    )?),
+                }
+                .into()),
 
                 _ => simplify_or_error(left, right, operator, exact),
             }
@@ -580,6 +737,14 @@ fn simplify_or_error(
         }))
     } else {
         Err(format!("Operator not recognized: {:?}", op))
+    }
+}
+
+fn is_zero(kind: &ExprKind) -> bool {
+    match kind {
+        ExprKind::Integer(n) => *n == 0,
+        ExprKind::Float(f) => f.value() == 0.0,
+        _ => false,
     }
 }
 
@@ -673,16 +838,32 @@ mod tests {
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), "7");
     }
+    #[test]
+    fn curl_operator_cartesian() {
+        let request = EvaluateRequest {
+            formula: r"\nabla \times \begin{pmatrix}F_{1} \\  F_{2} \\  F_{3}\end{pmatrix}".into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+            shift_for_exact: true,
+        };
+
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"\begin{pmatrix} \frac{d}{dy}F_3 - \frac{d}{dz}F_2 \\ \frac{d}{dz}F_1 - \frac{d}{dx}F_3 \\ \frac{d}{dx}F_2 - \frac{d}{dy}F_1 \end{pmatrix}"
+        );
+    }
+
 	#[test]
-	fn curl_operator_cartesian() {
+	fn derivatives() {
 		let request = EvaluateRequest {
-			formula: r"\nabla \times \begin{pmatrix}F_{1} \\  F_{2} \\  F_{3}\end{pmatrix}".into(),
+			formula: r"\frac{d}{dx}(2x^{10}+ 0.5x^{2}+ 12231+y)".into(),
 			previous_lines: vec![],
 			approximate: false,
 			precision: -1,
 			shift_for_exact: true,
 		};
 
-		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"\begin{pmatrix} \frac{d}{dy}F_3 - \frac{d}{dz}F_2 \\ \frac{d}{dz}F_1 - \frac{d}{dx}F_3 \\ \frac{d}{dx}F_2 - \frac{d}{dy}F_1 \end{pmatrix}");
+		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"20 \cdot x^{9} + 1 \cdot x + \frac{d}{dx}y");
 	}
 }
