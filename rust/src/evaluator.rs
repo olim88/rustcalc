@@ -480,6 +480,22 @@ mod tests {
             shift_for_exact: false,
         };
 
-        assert_eq!(evaluate_latex_impl(&request).unwrap(), "0"); //todo this works but rounding?
+        assert_eq!(evaluate_latex_impl(&request).unwrap(), "0");
     }
+	#[test]
+	fn text_cross_product_and_variables() {
+		let request = EvaluateRequest {
+			formula: r"\begin{pmatrix}a_{1} \\  a_{2} \\  a_{3} \end{pmatrix}\times \begin{pmatrix}b_{1} \\  b_{2} \\  b_{3}\end{pmatrix}"
+				.into(),
+			previous_lines: vec![],
+			approximate: false,
+			precision: -1,
+			shift_for_exact: true,
+		};
+
+		assert_eq!(
+			evaluate_latex_impl(&request).unwrap(),
+			r"\begin{pmatrix} a_2 \cdot b_3 - a_3 \cdot b_2 \\ a_3 \cdot b_1 - a_1 \cdot b_3 \\ a_1 \cdot b_2 - a_2 \cdot b_1 \end{pmatrix}"
+		);
+	}
 }
