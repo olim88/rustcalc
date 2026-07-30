@@ -82,11 +82,8 @@ class RustCalcHintRenderer implements PluginValue {
 							settings.approxCalculationTriggerString,
 						);
 
-						const splitFormula = trimmedLatexLine
-							.split(calcTrigger)
-							.filter(
-								(part) => part.replace('\\\\', '').trim().length > 0,
-							);
+						const splitFormula: string[] = splitOutsideBrackets(trimmedLatexLine, calcTrigger)
+							.filter((part) => part.replace('\\\\', '').trim().length > 0);
 						const formula = splitFormula[splitFormula.length - 1];
 						if (!formula) return;
 
@@ -122,6 +119,53 @@ class RustCalcHintRenderer implements PluginValue {
 
 		return builder.finish();
 	}
+}
+/**
+ * Splits `str` on matches of `regex`, but only when the match occurs
+ * outside of any (), [], or {} bracket nesting.
+ * Backslash-escaped brackets (\{, \}, \(, \)) are treated as literal
+ * characters, not grouping brackets.
+ */
+function splitOutsideBrackets(str: string, regex: RegExp): string[] {
+	const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
+	const globalRegex = new RegExp(regex.source, flags);
+
+	const OPEN: Record<string, number> = { '(': 1, '[': 1, '{': 1 };
+	const CLOSE: Record<string, number> = { ')': -1, ']': -1, '}': -1 };
+
+	const depthAt: number[] = new Array<number>(str.length + 1).fill(0);
+	let depth = 0;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charAt(i);
+		const isEscaped = str.charAt(i - 1) === '\\';
+		if (!isEscaped) {
+			if (OPEN[ch]) depth += 1;
+			else if (CLOSE[ch]) depth = Math.max(0, depth - 1);
+		}
+		depthAt[i + 1] = depth;
+	}
+
+	// If brackets never balance out (more opens than closes), we can't
+	// reliably tell "inside" from "outside" for the rest of the string.
+	// Fall back to a plain split rather than silently blocking every
+	// remaining match.
+	if (depthAt[str.length] !== 0) {
+		return str.split(globalRegex);
+	}
+
+	const parts: string[] = [];
+	let lastIndex = 0;
+	let match: RegExpExecArray | null;
+	while ((match = globalRegex.exec(str)) !== null) {
+		const matchStart = match.index;
+		if (depthAt[matchStart] === 0) {
+			parts.push(str.slice(lastIndex, matchStart));
+			lastIndex = matchStart + match[0].length;
+		}
+		if (match[0].length === 0) globalRegex.lastIndex++;
+	}
+	parts.push(str.slice(lastIndex));
+	return parts;
 }
 
 function nodeTagsIncludes(nodeTypeName: string, tag: string): boolean {

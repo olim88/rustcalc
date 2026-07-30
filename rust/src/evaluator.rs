@@ -132,7 +132,8 @@ fn evaluate(
         ExprKind::Divergence { field } => evaluate_divergence(*field, exact, vars),
         ExprKind::Derivative { expr, var, order } => {
             evaluate_derivative(expr, &var, order, exact, vars)
-        } //todo method for derivatives
+        }
+
         ExprKind::Differential { var } => Ok(expression), //todo method for Differential
         ExprKind::Constant(con) => {
             if !exact {
@@ -150,12 +151,76 @@ fn evaluate(
             }
             Ok(Expression::new(ExprKind::Vector(evaluated_args)))
         }
+        ExprKind::Sum {
+            index,
+            lower,
+            upper,
+            body,
+        } => evaluate_sum(index, lower, upper, body, exact, vars),
+        ExprKind::Product {
+            index,
+            lower,
+            upper,
+            body,
+        } => evaluate_product(index, lower, upper, body, exact, vars),
 
         _ => Err(format!(
             "expression kind not recognized: {:?}",
             expression.kind
         )),
     }
+}
+
+fn evaluate_product(
+    index: String,
+    lower: Box<Expression>,
+    upper: Box<Expression>,
+    body: Box<Expression>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    evaluate_sequence(BinaryOp::Mul, Expression::integer(1), index, lower, upper, body, exact, vars)
+}
+
+fn evaluate_sum(
+    index: String,
+    lower: Box<Expression>,
+    upper: Box<Expression>,
+    body: Box<Expression>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    evaluate_sequence(BinaryOp::Add, Expression::integer(0), index, lower, upper, body, exact, vars)
+}
+/// evaluate sum / product as all that changes is the binary op and start
+fn evaluate_sequence(
+    op: BinaryOp,
+	starting_value: Expression,
+    index: String,
+    lower: Box<Expression>,
+    upper: Box<Expression>,
+    body: Box<Expression>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let start = evaluate(*lower, exact, vars)?;
+    let end = evaluate(*upper, exact, vars)?;
+    //if start and end are not integers fail
+    if let ExprKind::Integer(start) = start.kind {
+        if let ExprKind::Integer(end) = end.kind {
+            let mut total = starting_value;
+            for i in start..=end {
+                let step = evaluate(
+                    body.substitute(index.as_str(), &Expression::integer(i)),
+                    exact,
+                    vars,
+                )?;
+                total = evaluate_binary(op, total, step, exact, vars)?;
+            }
+            return Ok(total);
+        }
+    }
+    Err("Can't evaluate expression".to_string())
 }
 
 fn evaluate_derivative(
@@ -908,19 +973,31 @@ mod tests {
             r"20 \cdot x^{9} + 1 \cdot x + \frac{d}{dx}y"
         );
     }
-	#[test]
-	fn divergence() {
-		let request = EvaluateRequest {
-			formula: r"\nabla \cdot\begin{pmatrix}F_{x} \\  F_{y} \\  F_{z}\end{pmatrix}".into(),
-			previous_lines: vec![],
-			approximate: false,
-			precision: -1,
-			shift_for_exact: true,
-		};
+    #[test]
+    fn divergence() {
+        let request = EvaluateRequest {
+            formula: r"\nabla \cdot\begin{pmatrix}F_{x} \\  F_{y} \\  F_{z}\end{pmatrix}".into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+            shift_for_exact: true,
+        };
 
-		assert_eq!(
-			evaluate_latex_impl(&request).unwrap(),
-			r"\frac{d}{dx}F_x + \frac{d}{dy}F_y + \frac{d}{dz}F_z"
-		);
-	}
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"\frac{d}{dx}F_x + \frac{d}{dy}F_y + \frac{d}{dz}F_z"
+        );
+    }
+    #[test]
+    fn summation() {
+        let request = EvaluateRequest {
+            formula: r"\sum_{i=3}^{6}(i^{2})".into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+            shift_for_exact: true,
+        };
+
+        assert_eq!(evaluate_latex_impl(&request).unwrap(), r"86");
+    }
 }
