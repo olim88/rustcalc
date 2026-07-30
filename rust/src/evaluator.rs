@@ -46,7 +46,7 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
     }
     //find veriables from previces lines
 
-    let vars: HashMap<String, Expression> = exstract_vars(&request.previous_lines);
+    let vars: HashMap<String, Expression> = extract_vars(&request.previous_lines);
 
     let expr = parse_latex_lenient(formula);
 
@@ -61,7 +61,7 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
 }
 
 /// Looks at previous equations in the document and if any of them are defining a constant save them for later use
-fn exstract_vars(lines: &Vec<String>) -> HashMap<String, Expression> {
+fn extract_vars(lines: &Vec<String>) -> HashMap<String, Expression> {
     let vars_equations = parse_latex_equation_system(lines.join(";").as_str());
     match vars_equations {
         Ok(exps) => {
@@ -129,6 +129,7 @@ fn evaluate(
         ExprKind::CrossProduct { left, right } => evaluate_cross_product(left, right, exact, vars),
         ExprKind::Gradient { expr } => evaluate_gradient(*expr, exact, vars),
         ExprKind::Curl { field } => evaluate_curl(*field, exact, vars),
+        ExprKind::Divergence { field } => evaluate_divergence(*field, exact, vars),
         ExprKind::Derivative { expr, var, order } => {
             evaluate_derivative(expr, &var, order, exact, vars)
         } //todo method for derivatives
@@ -186,6 +187,14 @@ fn evaluate_derivative(
                 BinaryOp::Mul,
                 *left,
                 evaluate_derivative(right, &var, order, exact, vars)?,
+                exact,
+                vars,
+            )?)
+        } else if op == BinaryOp::Mul && !right.contains_variable(var) {
+            Ok(evaluate_binary(
+                BinaryOp::Mul,
+                *right,
+                evaluate_derivative(left, &var, order, exact, vars)?,
                 exact,
                 vars,
             )?)
@@ -295,6 +304,7 @@ fn evaluate_gradient(
 
     Ok(Expression::vector(elements))
 }
+
 /// Evaluate curl of a vector. Assumes that we are in Cartesian coords
 fn evaluate_curl(
     expression: Expression,
@@ -302,6 +312,9 @@ fn evaluate_curl(
     vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
     if let ExprKind::Vector(vec) = expression.clone().kind {
+        if vec.len() != 3 {
+            return Err("expression dose not support curl".to_string());
+        }
         let mut output = Vec::new();
         output.push(evaluate_binary(
             BinaryOp::Sub,
@@ -357,6 +370,32 @@ fn evaluate_curl(
         Ok(Expression::vector(output))
     } else {
         Err("expression dose not support curl".to_string())
+    }
+}
+fn evaluate_divergence(
+    expression: Expression,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    if let ExprKind::Vector(vec) = expression.clone().kind {
+        if vec.len() != 3 {
+            return Err("expression dose not support divergence".to_string());
+        }
+        evaluate_binary(
+            BinaryOp::Add,
+            evaluate_derivative(Box::from(vec[0].clone()), &"x".to_string(), 1, exact, vars)?,
+            evaluate_binary(
+                BinaryOp::Add,
+                evaluate_derivative(Box::from(vec[1].clone()), &"y".to_string(), 1, exact, vars)?,
+                evaluate_derivative(Box::from(vec[2].clone()), &"z".to_string(), 1, exact, vars)?,
+                exact,
+                vars,
+            )?,
+            exact,
+            vars,
+        )
+    } else {
+        Err("expression dose not support divergence".to_string())
     }
 }
 
@@ -601,11 +640,11 @@ fn evaluate_binary(
                 //if multiplying by another multiplication try to simplify by multiplying first value only. Is this good? or just a bodge
                 (
                     _,
-					ExprKind::Binary {
-						op,
-						left: sub_left,
-						right: sub_right,
-					}
+                    ExprKind::Binary {
+                        op,
+                        left: sub_left,
+                        right: sub_right,
+                    },
                 ) if *op == BinaryOp::Mul => Ok(ExprKind::Binary {
                     op: BinaryOp::Mul,
                     left: Box::from(evaluate_binary(
@@ -854,16 +893,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn derivatives() {
+        let request = EvaluateRequest {
+            formula: r"\frac{d}{dx}(2x^{10}+ 0.5x^{2}+ 12231+y)".into(),
+            previous_lines: vec![],
+            approximate: false,
+            precision: -1,
+            shift_for_exact: true,
+        };
+
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"20 \cdot x^{9} + 1 \cdot x + \frac{d}{dx}y"
+        );
+    }
 	#[test]
-	fn derivatives() {
+	fn divergence() {
 		let request = EvaluateRequest {
-			formula: r"\frac{d}{dx}(2x^{10}+ 0.5x^{2}+ 12231+y)".into(),
+			formula: r"\nabla \cdot\begin{pmatrix}F_{x} \\  F_{y} \\  F_{z}\end{pmatrix}".into(),
 			previous_lines: vec![],
 			approximate: false,
 			precision: -1,
 			shift_for_exact: true,
 		};
 
-		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"20 \cdot x^{9} + 1 \cdot x + \frac{d}{dx}y");
+		assert_eq!(
+			evaluate_latex_impl(&request).unwrap(),
+			r"\frac{d}{dx}F_x + \frac{d}{dy}F_y + \frac{d}{dz}F_z"
+		);
 	}
 }
