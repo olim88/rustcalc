@@ -151,6 +151,7 @@ fn evaluate(
             }
             Ok(Expression::new(ExprKind::Vector(evaluated_args)))
         }
+        ExprKind::Matrix(matrix) => evaluate_matrix(matrix, exact, vars),
         ExprKind::Sum {
             index,
             lower,
@@ -171,6 +172,23 @@ fn evaluate(
     }
 }
 
+//evaluate all value in matrix
+fn evaluate_matrix(
+    matrix: Vec<Vec<Expression>>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let evaluated_matrix = matrix
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|expr| evaluate(expr, exact, vars))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ExprKind::Matrix(evaluated_matrix).into())
+}
+
 fn evaluate_product(
     index: String,
     lower: Box<Expression>,
@@ -179,7 +197,16 @@ fn evaluate_product(
     exact: bool,
     vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
-    evaluate_sequence(BinaryOp::Mul, Expression::integer(1), index, lower, upper, body, exact, vars)
+    evaluate_sequence(
+        BinaryOp::Mul,
+        Expression::integer(1),
+        index,
+        lower,
+        upper,
+        body,
+        exact,
+        vars,
+    )
 }
 
 fn evaluate_sum(
@@ -190,12 +217,21 @@ fn evaluate_sum(
     exact: bool,
     vars: &HashMap<String, Expression>,
 ) -> Result<Expression, String> {
-    evaluate_sequence(BinaryOp::Add, Expression::integer(0), index, lower, upper, body, exact, vars)
+    evaluate_sequence(
+        BinaryOp::Add,
+        Expression::integer(0),
+        index,
+        lower,
+        upper,
+        body,
+        exact,
+        vars,
+    )
 }
 /// evaluate sum / product as all that changes is the binary op and start
 fn evaluate_sequence(
     op: BinaryOp,
-	starting_value: Expression,
+    starting_value: Expression,
     index: String,
     lower: Box<Expression>,
     upper: Box<Expression>,
@@ -625,10 +661,20 @@ fn evaluate_binary(
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
                     operate_on_vector(lhs, rhs, operator, exact, vars)
                 }
+                (ExprKind::Matrix(lhs), ExprKind::Matrix(rhs)) => {
+                    operate_on_matrix(lhs, rhs, operator, exact, vars)
+                }
                 (lhs, _) if is_zero(lhs) => Ok(right),
                 (_, rhs) if is_zero(rhs) => Ok(left),
 
-                _ => simplify_or_error(left, right, operator, exact),
+                //if the same simplify using power of 2 else leave it
+                (lhs, rhs) => {
+                    if lhs.eq(rhs) {
+                        evaluate_binary(BinaryOp::Mul, Expression::integer(2), left, exact, vars)
+                    } else {
+                        simplify_or_error(left, right, operator, exact)
+                    }
+                }
             }
         }
         BinaryOp::Sub => {
@@ -651,6 +697,9 @@ fn evaluate_binary(
 
                 (ExprKind::Vector(lhs), ExprKind::Vector(rhs)) => {
                     operate_on_vector(lhs, rhs, operator, exact, vars)
+                }
+                (ExprKind::Matrix(lhs), ExprKind::Matrix(rhs)) => {
+                    operate_on_matrix(lhs, rhs, operator, exact, vars)
                 }
                 (_, rhs) if is_zero(rhs) => Ok(left),
 
@@ -697,6 +746,10 @@ fn evaluate_binary(
                         .map(|i| evaluate_binary(BinaryOp::Mul, i, right.clone(), exact, vars))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Expression::new(ExprKind::Vector(new)))
+                }
+                //matrix multiplication
+                (ExprKind::Matrix(lhs), ExprKind::Matrix(rhs)) => {
+                    operate_on_matrix(lhs, rhs, operator, exact, vars)
                 }
                 //multiplying by 0 is 0
                 (lhs, _) if is_zero(lhs) => Ok(Expression::integer(0)),
@@ -868,6 +921,71 @@ fn operate_on_vector(
     Ok(Expression::new(ExprKind::Vector(evaluated)))
 }
 
+fn operate_on_matrix(
+    lhs: &Vec<Vec<Expression>>,
+    rhs: &Vec<Vec<Expression>>,
+    op: BinaryOp,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    let lhs_size: (usize, usize) = (lhs.len(), lhs[0].len());
+    let rhs_size: (usize, usize) = (rhs.len(), rhs[0].len());
+    if op == BinaryOp::Add || op == BinaryOp::Sub {
+        //make sure there the same size
+        if lhs_size == rhs_size {
+            let mut new_matrix = Vec::new();
+            for col in 0..lhs_size.0 {
+                let mut evaluated_row = Vec::new();
+                for row in 0..lhs_size.1 {
+                    evaluated_row.push(evaluate_binary(
+                        op,
+                        lhs[col][row].clone(),
+                        rhs[col][row].clone(),
+                        exact,
+                        vars,
+                    )?);
+                }
+                new_matrix.push(evaluated_row);
+            }
+            Ok(ExprKind::Matrix(new_matrix).into())
+        } else {
+            Err("Can't opporate on matrix of diffrent sizes".to_string())
+        }
+    } else if op == BinaryOp::Mul {
+        if lhs_size.1 == rhs_size.0 {
+            let mut new_matrix = Vec::new();
+            for col in 0..lhs_size.0 {
+                let mut evaluated_row = Vec::new();
+                for row in 0..rhs_size.1 {
+                    let mut result = Expression::integer(0);
+                    for k in 0..rhs_size.0 {
+                        result = evaluate_binary(
+                            BinaryOp::Add,
+                            result.clone(),
+                            evaluate_binary(
+                                BinaryOp::Mul,
+                                lhs[col][k].clone(),
+                                rhs[k][row].clone(),
+                                exact,
+                                vars,
+                            )?,
+                            exact,
+                            vars,
+                        )?;
+                    }
+					evaluated_row.push(result);
+                }
+                new_matrix.push(evaluated_row);
+            }
+            Ok(ExprKind::Matrix(new_matrix).into())
+        } else {
+            Err("Can't multiply these matrix sizes".to_string())
+        }
+    } else {
+        Err(format!("Operator not recognized: {:?}", op))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1000,4 +1118,16 @@ mod tests {
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), r"86");
     }
+	#[test]
+	fn matrix_multiplication() {
+		let request = EvaluateRequest {
+			formula: r"\begin{pmatrix}2 & 3 & 4 \\  1 & 0 & 0\end{pmatrix}*\begin{pmatrix}0 & 1000 \\  1 & 100 \\  0 & 10\end{pmatrix}".into(),
+			previous_lines: vec![],
+			approximate: false,
+			precision: -1,
+			shift_for_exact: true,
+		};
+
+		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"\begin{pmatrix} 3 & 2340 \\ 0 & 1000 \end{pmatrix}");
+	}
 }
