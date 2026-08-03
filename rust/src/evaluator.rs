@@ -109,6 +109,10 @@ fn evaluate(
         ExprKind::Integer(_) | ExprKind::Float(_) => Ok(expression),
         ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right, exact, vars),
         ExprKind::Function { name, args } => {
+			//for some reason determinant is comming here. so fo now reroot to correct function todo
+			if name == "det" && args.len() == 1 {
+				return evaluate_determinant(Box::from(args[0].clone()), exact, vars);
+			}
             let output = evaluate_function(name, args, exact, vars);
             if let Ok(output) = output {
                 //if it's exact check to see if the function had a whole output otherwise keep the function how it was
@@ -152,6 +156,7 @@ fn evaluate(
             Ok(Expression::new(ExprKind::Vector(evaluated_args)))
         }
         ExprKind::Matrix(matrix) => evaluate_matrix(matrix, exact, vars),
+        ExprKind::Determinant { matrix } => evaluate_determinant(matrix, exact, vars),
         ExprKind::Sum {
             index,
             lower,
@@ -170,6 +175,72 @@ fn evaluate(
             expression.kind
         )),
     }
+}
+
+fn evaluate_determinant(
+    matrix: Box<Expression>,
+    exact: bool,
+    vars: &HashMap<String, Expression>,
+) -> Result<Expression, String> {
+    //make sure the expression is a matrix and is square
+    if let ExprKind::Matrix(matrix) = matrix.kind {
+        let size: (usize, usize) = (matrix.len(), matrix[0].len());
+        if size.0 != size.1 {
+            return Err("determinant matrix must be square".into());
+        }
+        //now we know that it's square size can be an integer
+        let size = size.0;
+
+        match size {
+            // determinant of 1x1 is just value in matrix
+            1 => return Ok(matrix[0][0].clone()),
+            //simple 2x2 matrix determinant ad - bc
+            2 => {
+                let det = evaluate_binary(
+                    BinaryOp::Sub,
+                    evaluate_binary(
+                        BinaryOp::Mul,
+                        matrix[0][0].clone(),
+                        matrix[1][1].clone(),
+                        exact,
+                        vars,
+                    )?,
+                    evaluate_binary(
+                        BinaryOp::Mul,
+                        matrix[0][1].clone(),
+                        matrix[1][0].clone(),
+                        exact,
+                        vars,
+                    )?,
+                    exact,
+                    vars,
+                )?;
+                return Ok(det);
+            }
+            //otherwise brake down into smaller parts
+            _ => {
+                let mut total = Expression::integer(0);
+                for col in 0..size {
+                    let mut sub_matrix: Vec<Vec<Expression>> = Vec::with_capacity(size - 1);
+                    for i in 1..size {
+                        let mut sub_vector: Vec<Expression> = Vec::with_capacity(size - 1);
+                        for j in 0..size {
+                            if j == col {
+                                continue;
+                            }
+                            sub_vector.push(matrix[i][j].clone());
+                        }
+                        sub_matrix.push(sub_vector);
+                    }
+					let sign = if col % 2 == 0 { Expression::integer(1) } else { Expression::integer(-1) };
+					let left = evaluate_binary(BinaryOp::Mul, sign, matrix[0][col].clone(), exact, vars )?;
+					total = evaluate_binary(BinaryOp::Add, total, evaluate_binary(BinaryOp::Mul, left, evaluate_determinant(Box::from(Expression::new(ExprKind::Matrix(sub_matrix))),exact, vars)?, exact, vars )?, exact, vars)?;
+                }
+				return Ok(total);
+            }
+        }
+    }
+    return Err("Can't find determinant of non matrix".into());
 }
 
 //evaluate all value in matrix
@@ -667,7 +738,7 @@ fn evaluate_binary(
                 (lhs, _) if is_zero(lhs) => Ok(right),
                 (_, rhs) if is_zero(rhs) => Ok(left),
 
-                //if the same simplify using power of 2 else leave it
+                //if the same simplify using multiply
                 (lhs, rhs) => {
                     if lhs.eq(rhs) {
                         evaluate_binary(BinaryOp::Mul, Expression::integer(2), left, exact, vars)
@@ -751,9 +822,46 @@ fn evaluate_binary(
                 (ExprKind::Matrix(lhs), ExprKind::Matrix(rhs)) => {
                     operate_on_matrix(lhs, rhs, operator, exact, vars)
                 }
+                //matrix by constant
+                (ExprKind::Integer(_), ExprKind::Matrix(matrix))
+                | (ExprKind::Float(_), ExprKind::Matrix(matrix)) => {
+                    let new = matrix
+                        .into_iter()
+                        .cloned()
+                        .map(|i| {
+                            i.into_iter()
+                                .clone()
+                                .map(|i| {
+                                    evaluate_binary(BinaryOp::Mul, left.clone(), i, exact, vars)
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Expression::new(ExprKind::Matrix(new)))
+                }
+                (ExprKind::Matrix(matrix), ExprKind::Integer(_))
+                | (ExprKind::Matrix(matrix), ExprKind::Float(_)) => {
+                    let new = matrix
+                        .into_iter()
+                        .cloned()
+                        .map(|i| {
+                            i.into_iter()
+                                .clone()
+                                .map(|i| {
+                                    evaluate_binary(BinaryOp::Mul, i, right.clone(), exact, vars)
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Expression::new(ExprKind::Matrix(new)))
+                }
                 //multiplying by 0 is 0
                 (lhs, _) if is_zero(lhs) => Ok(Expression::integer(0)),
                 (_, rhs) if is_zero(rhs) => Ok(Expression::integer(0)),
+
+				//multiplying by 1 is x
+				(lhs, _) if is_one(lhs) => Ok(right),
+				(_, rhs) if is_one(rhs) => Ok(left),
 
                 //if multiplying by another multiplication try to simplify by multiplying first value only. Is this good? or just a bodge
                 (
@@ -905,6 +1013,14 @@ fn is_zero(kind: &ExprKind) -> bool {
     }
 }
 
+fn is_one(kind: &ExprKind) -> bool {
+	match kind {
+		ExprKind::Integer(n) => *n == 1,
+		ExprKind::Float(f) => f.value() == 1.0,
+		_ => false,
+	}
+}
+
 fn operate_on_vector(
     lhs: &Vec<Expression>,
     rhs: &Vec<Expression>,
@@ -973,7 +1089,7 @@ fn operate_on_matrix(
                             vars,
                         )?;
                     }
-					evaluated_row.push(result);
+                    evaluated_row.push(result);
                 }
                 new_matrix.push(evaluated_row);
             }
@@ -1118,9 +1234,9 @@ mod tests {
 
         assert_eq!(evaluate_latex_impl(&request).unwrap(), r"86");
     }
-	#[test]
-	fn matrix_multiplication() {
-		let request = EvaluateRequest {
+    #[test]
+    fn matrix_multiplication() {
+        let request = EvaluateRequest {
 			formula: r"\begin{pmatrix}2 & 3 & 4 \\  1 & 0 & 0\end{pmatrix}*\begin{pmatrix}0 & 1000 \\  1 & 100 \\  0 & 10\end{pmatrix}".into(),
 			previous_lines: vec![],
 			approximate: false,
@@ -1128,6 +1244,24 @@ mod tests {
 			shift_for_exact: true,
 		};
 
-		assert_eq!(evaluate_latex_impl(&request).unwrap(), r"\begin{pmatrix} 3 & 2340 \\ 0 & 1000 \end{pmatrix}");
+        assert_eq!(
+            evaluate_latex_impl(&request).unwrap(),
+            r"\begin{pmatrix} 3 & 2340 \\ 0 & 1000 \end{pmatrix}"
+        );
+    }
+	#[test]
+	fn matrix_determinant() {
+		let request = EvaluateRequest {
+			formula: r"\det \begin{pmatrix}1 & 0 & 2 & -1 \\  3 & 0 & 0 & 5 \\  2 & 1 & 4 & -3 \\  1 & 0 & 5 & 0\end{pmatrix}".into(),
+			previous_lines: vec![],
+			approximate: false,
+			precision: -1,
+			shift_for_exact: true,
+		};
+
+		assert_eq!(
+			evaluate_latex_impl(&request).unwrap(),
+			r"30"
+		);
 	}
 }
