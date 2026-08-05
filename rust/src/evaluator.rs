@@ -6,11 +6,11 @@
 
 use mathlex::ExprKind::Exists;
 use mathlex::{
-    parse_latex, parse_latex_equation_system, parse_latex_lenient, parse_system, BinaryOp,
-    ExprKind, Expression, MathConstant, MathFloat, ParseResult, ToLatex, UnaryOp,
+    BinaryOp, ExprKind, Expression, MathConstant, MathFloat, ParseResult, ToLatex, UnaryOp,
+    parse_latex, parse_latex_equation_system, parse_latex_lenient, parse_system,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{E, PI};
 use std::iter::Map;
 
@@ -107,12 +107,14 @@ fn evaluate(
 ) -> Result<Expression, String> {
     match expression.clone().kind {
         ExprKind::Integer(_) | ExprKind::Float(_) => Ok(expression),
-        ExprKind::Binary { op, left, right } => evaluate_binary(op, *left, *right, exact, vars),
+        ExprKind::Binary { op, left, right } => {
+            combine_like_terms(evaluate_binary(op, *left, *right, exact, vars)?)
+        }
         ExprKind::Function { name, args } => {
-			//for some reason determinant is comming here. so fo now reroot to correct function todo
-			if name == "det" && args.len() == 1 {
-				return evaluate_determinant(Box::from(args[0].clone()), exact, vars);
-			}
+            //for some reason determinant is comming here. so fo now reroot to correct function todo
+            if name == "det" && args.len() == 1 {
+                return evaluate_determinant(Box::from(args[0].clone()), exact, vars);
+            }
             let output = evaluate_function(name, args, exact, vars);
             if let Ok(output) = output {
                 //if it's exact check to see if the function had a whole output otherwise keep the function how it was
@@ -232,11 +234,32 @@ fn evaluate_determinant(
                         }
                         sub_matrix.push(sub_vector);
                     }
-					let sign = if col % 2 == 0 { Expression::integer(1) } else { Expression::integer(-1) };
-					let left = evaluate_binary(BinaryOp::Mul, sign, matrix[0][col].clone(), exact, vars )?;
-					total = evaluate_binary(BinaryOp::Add, total, evaluate_binary(BinaryOp::Mul, left, evaluate_determinant(Box::from(Expression::new(ExprKind::Matrix(sub_matrix))),exact, vars)?, exact, vars )?, exact, vars)?;
+                    let sign = if col % 2 == 0 {
+                        Expression::integer(1)
+                    } else {
+                        Expression::integer(-1)
+                    };
+                    let left =
+                        evaluate_binary(BinaryOp::Mul, sign, matrix[0][col].clone(), exact, vars)?;
+                    total = evaluate_binary(
+                        BinaryOp::Add,
+                        total,
+                        evaluate_binary(
+                            BinaryOp::Mul,
+                            left,
+                            evaluate_determinant(
+                                Box::from(Expression::new(ExprKind::Matrix(sub_matrix))),
+                                exact,
+                                vars,
+                            )?,
+                            exact,
+                            vars,
+                        )?,
+                        exact,
+                        vars,
+                    )?;
                 }
-				return Ok(total);
+                return Ok(total);
             }
         }
     }
@@ -740,11 +763,12 @@ fn evaluate_binary(
 
                 //if the same simplify using multiply
                 (lhs, rhs) => {
-                    if lhs.eq(rhs) {
-                        evaluate_binary(BinaryOp::Mul, Expression::integer(2), left, exact, vars)
-                    } else {
-                        simplify_or_error(left, right, operator, exact)
-                    }
+                    // if lhs.eq(rhs) {
+                    //     evaluate_binary(BinaryOp::Mul, Expression::integer(2), left, exact, vars)
+                    // } else {
+                    //     simplify_or_error(left, right, operator, exact)
+                    // }
+                    simplify_or_error(left, right, operator, exact)
                 }
             }
         }
@@ -859,30 +883,30 @@ fn evaluate_binary(
                 (lhs, _) if is_zero(lhs) => Ok(Expression::integer(0)),
                 (_, rhs) if is_zero(rhs) => Ok(Expression::integer(0)),
 
-				//multiplying by 1 is x
-				(lhs, _) if is_one(lhs) => Ok(right),
-				(_, rhs) if is_one(rhs) => Ok(left),
+                //multiplying by 1 is x
+                (lhs, _) if is_one(lhs) => Ok(right),
+                (_, rhs) if is_one(rhs) => Ok(left),
 
                 //if multiplying by another multiplication try to simplify by multiplying first value only. Is this good? or just a bodge
-                (
-                    _,
-                    ExprKind::Binary {
-                        op,
-                        left: sub_left,
-                        right: sub_right,
-                    },
-                ) if *op == BinaryOp::Mul => Ok(ExprKind::Binary {
-                    op: BinaryOp::Mul,
-                    left: Box::from(evaluate_binary(
-                        BinaryOp::Mul,
-                        left.clone(),
-                        *sub_left.clone(),
-                        exact,
-                        vars,
-                    )?),
-                    right: Box::from(*sub_right.clone()),
-                }
-                .into()),
+                // (
+                //     _,
+                //     ExprKind::Binary {
+                //         op,
+                //         left: sub_left,
+                //         right: sub_right,
+                //     },
+                // ) if *op == BinaryOp::Mul => Ok(ExprKind::Binary {
+                //     op: BinaryOp::Mul,
+                //     left: Box::from(evaluate_binary(
+                //         BinaryOp::Mul,
+                //         left.clone(),
+                //         *sub_left.clone(),
+                //         exact,
+                //         vars,
+                //     )?),
+                //     right: Box::from(*sub_right.clone()),
+                // }
+                // .into()),
 
                 //if the same simplify using power of 2 else leave it
                 (lhs, rhs) => {
@@ -995,13 +1019,19 @@ fn simplify_or_error(
     simplifying: bool,
 ) -> Result<Expression, String> {
     if simplifying {
-        Ok(Expression::new(ExprKind::Binary {
-            op,
-            left: Box::from(left),
-            right: Box::from(right),
-        }))
+        Ok(combine_coefficients(
+            ExprKind::Binary {
+                op,
+                left: Box::from(left),
+                right: Box::from(right),
+            }
+            .into(),
+        )?)
     } else {
-        Err(format!("Operator not recognized: {:?}", op))
+        Err(format!(
+            "Operator not recognized when simplifying: {:?}",
+            op
+        ))
     }
 }
 
@@ -1014,11 +1044,179 @@ fn is_zero(kind: &ExprKind) -> bool {
 }
 
 fn is_one(kind: &ExprKind) -> bool {
-	match kind {
-		ExprKind::Integer(n) => *n == 1,
-		ExprKind::Float(f) => f.value() == 1.0,
-		_ => false,
-	}
+    match kind {
+        ExprKind::Integer(n) => *n == 1,
+        ExprKind::Float(f) => f.value() == 1.0,
+        _ => false,
+    }
+}
+/// takes a chain of additions / subtractions and collects the like terms
+fn combine_like_terms(expression: Expression) -> Result<Expression, String> {
+    let like_terms = get_like_terms(expression, Vec::new(), true)?;
+    //recombine with additions
+    if like_terms.is_empty() {
+        return Err("Can't combine like terms".to_owned());
+    }
+    let mut output: Expression = like_terms.first().unwrap().clone();
+    for (i, expr) in like_terms.iter().enumerate() {
+        if i == 0 {
+            continue;
+        }
+        output = ExprKind::Binary {
+            op: BinaryOp::Add,
+            left: Box::from(output),
+            right: Box::new(expr.clone()),
+        }
+        .into();
+    }
+    Ok(output)
+}
+/// recursively finds like terms
+fn get_like_terms(
+    expression: Expression,
+    mut unique_terms: Vec<Expression>,
+    positive: bool,
+) -> Result<Vec<Expression>, String> {
+    //if still an addition  recurse
+    if let ExprKind::Binary { op, left, right } = expression.clone().kind
+        && (BinaryOp::Add == op || BinaryOp::Sub == op)
+    {
+        let add_left_terms = get_like_terms(*left, unique_terms, positive)?;
+        let all_terms = get_like_terms(
+            *right,
+            add_left_terms,
+            if BinaryOp::Add == op {
+                positive
+            } else {
+                !positive
+            },
+        )?;
+        Ok(all_terms)
+    } else {
+        //try to add term to each unqiue term if it does not add to any extend unique terms with it
+        for i in 0..unique_terms.len() {
+            let op = if positive {
+                BinaryOp::Add
+            } else {
+                BinaryOp::Sub
+            };
+            let combined = evaluate_binary(
+                op,
+                unique_terms[i].clone(),
+                expression.clone(),
+                true,
+                &HashMap::new(),
+            )?;
+            if !matches!(
+                combined.kind,
+                ExprKind::Binary {
+                    op: BinaryOp::Add | BinaryOp::Sub,
+                    ..
+                }
+            ) {
+                //if it has not just become an additions save this to the arry then return
+                unique_terms[i] = combined;
+                return Ok(unique_terms);
+            }
+        }
+        //add to end of list if it does not combine
+        unique_terms.push(expression);
+        Ok(unique_terms)
+    }
+}
+/// collect like terms in binary opporations
+fn combine_coefficients(expression: Expression) -> Result<Expression, String> {
+    if let ExprKind::Binary { op, left, right } = expression.clone().kind {
+        let left_pair = get_coefficient(*left.clone());
+        let right_pair = get_coefficient(*right.clone());
+        //if they both have a coeff or potential coeff
+        if let Some(left_pair) = left_pair.clone()
+            && let Some(right_pair) = right_pair
+        {
+            match op {
+                BinaryOp::Add | BinaryOp::Sub => {
+                    if left_pair.1.eq(&right_pair.1) {
+                        return Ok(ExprKind::Binary {
+                            op: BinaryOp::Mul,
+                            left: Box::from(evaluate_binary(
+                                op,
+                                left_pair.0,
+                                right_pair.0,
+                                true,
+                                &HashMap::new(),
+                            )?),
+                            right: Box::from(right_pair.1),
+                        }
+                        .into());
+                    }
+                }
+
+                _ => {}
+            }
+        }
+        //else one of them is a number
+        else {
+            //if doing multiplication check to see if there is one coeff and multiply that coeff by the number
+            if op == BinaryOp::Mul {
+                if let Some(right_pair) = right_pair {
+                    return Ok(ExprKind::Binary {
+                        op: BinaryOp::Mul,
+                        left: Box::from(evaluate_binary(
+                            op,
+                            *left,
+                            right_pair.0,
+                            true,
+                            &HashMap::new(),
+                        )?),
+                        right: Box::from(right_pair.1),
+                    }
+                    .into());
+                }
+                if let Some(left_pair) = left_pair {
+                    return Ok(ExprKind::Binary {
+                        op: BinaryOp::Mul,
+                        left: Box::from(evaluate_binary(
+                            op,
+                            left_pair.0,
+                            *right,
+                            true,
+                            &HashMap::new(),
+                        )?),
+                        right: Box::from(left_pair.1),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        Ok(expression)
+    } else {
+        //if not a binary operation can't do anything
+        Ok(expression)
+    }
+}
+
+fn get_coefficient(expression: Expression) -> Option<(Expression, Expression)> {
+    // only makes sense to have a coeff if not a number (todo match)
+    if let ExprKind::Integer(_) = expression.clone().kind {
+        return None;
+    }
+    if let ExprKind::Float(_) = expression.clone().kind {
+        return None;
+    }
+
+    if let ExprKind::Binary { op, left, right } = &expression.kind {
+        if op.eq(&BinaryOp::Mul) {
+            return match (&left.kind, &right.kind) {
+                (ExprKind::Integer(_), _) | (ExprKind::Float(_), _) => {
+                    Some((*left.clone(), *right.clone()))
+                }
+                _ => Some((Expression::integer(1), expression)),
+            };
+        }
+    }
+    // coefficient is 0 if undefined
+    Some((Expression::integer(1), expression))
 }
 
 fn operate_on_vector(
@@ -1204,7 +1402,7 @@ mod tests {
 
         assert_eq!(
             evaluate_latex_impl(&request).unwrap(),
-            r"20 \cdot x^{9} + 1 \cdot x + \frac{d}{dx}y"
+            r"20 \cdot x^{9} + x + \frac{d}{dx}y"
         );
     }
     #[test]
@@ -1249,9 +1447,9 @@ mod tests {
             r"\begin{pmatrix} 3 & 2340 \\ 0 & 1000 \end{pmatrix}"
         );
     }
-	#[test]
-	fn matrix_determinant() {
-		let request = EvaluateRequest {
+    #[test]
+    fn matrix_determinant() {
+        let request = EvaluateRequest {
 			formula: r"\det \begin{pmatrix}1 & 0 & 2 & -1 \\  3 & 0 & 0 & 5 \\  2 & 1 & 4 & -3 \\  1 & 0 & 5 & 0\end{pmatrix}".into(),
 			previous_lines: vec![],
 			approximate: false,
@@ -1259,9 +1457,6 @@ mod tests {
 			shift_for_exact: true,
 		};
 
-		assert_eq!(
-			evaluate_latex_impl(&request).unwrap(),
-			r"30"
-		);
-	}
+        assert_eq!(evaluate_latex_impl(&request).unwrap(), r"30");
+    }
 }
