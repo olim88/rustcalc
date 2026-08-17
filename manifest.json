@@ -2,7 +2,7 @@
 	"id": "rust-latex-calculator",
 	"name": "Rust Latex Calculator",
 	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
+	"minAppVersion": "1.13.0",
 	"description": "Calculates latex maths on the fly with rust",
 	"author": "Obsidian",
 	"authorUrl": "https://obsidian.md",

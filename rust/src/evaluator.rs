@@ -111,7 +111,7 @@ fn evaluate(
             combine_like_terms(evaluate_binary(op, *left, *right, exact, vars)?)
         }
         ExprKind::Function { name, args } => {
-            //for some reason determinant is comming here. so fo now reroot to correct function todo
+            //for some reason determinant is coming here. so fo now reroot to correct function todo
             if name == "det" && args.len() == 1 {
                 return evaluate_determinant(Box::from(args[0].clone()), exact, vars);
             }

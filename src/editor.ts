@@ -32,6 +32,7 @@ class RustCalcHintRenderer implements PluginValue {
 
 		for (const {from, to} of view.visibleRanges) {
 			const cursorPos = view.state.selection.main.from;
+
 			let mathBegin: number | null = null;
 			let previousLines: string[] = [];
 

@@ -1,4 +1,5 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, PluginSettingTab } from 'obsidian';
+
 import RustCalcPlugin from './main';
 
 export interface RustCalcSettings {
@@ -19,6 +20,9 @@ export const DEFAULT_SETTINGS: RustCalcSettings = {
 };
 
 export class RustCalcSettingTab extends PluginSettingTab {
+    display(): void {
+        throw new Error("Method not implemented. Not needed anymore but i can't remove it");
+    }
 	plugin: RustCalcPlugin;
 
 	constructor(app: App, plugin: RustCalcPlugin) {
@@ -26,67 +30,28 @@ export class RustCalcSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Calculation trigger string')
-			.setDesc('The string that triggers calculation.')
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a string here')
-					.setValue(this.plugin.settings.calculationTriggerString)
-					.onChange(async (value) => {
-						this.plugin.settings.calculationTriggerString = value;
-						await this.plugin.saveSettings();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Approximation trigger string')
-			.setDesc('The string that triggers approximation.')
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a string here')
-					.setValue(this.plugin.settings.approxCalculationTriggerString)
-					.onChange(async (value) => {
-						this.plugin.settings.approxCalculationTriggerString = value;
-						await this.plugin.saveSettings();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Approximation precision')
-			.setDesc('The precision used when approximating (-1 for max).')
-			.addText((text) =>
-				text
-					.setPlaceholder('Type a number here')
-					.setValue(
-						this.plugin.settings.approxDecimalPrecision.toString(),
-					)
-					.onChange(async (value) => {
-						const parsed = parseInt(value, 10);
-						this.plugin.settings.approxDecimalPrecision = Number.isNaN(
-							parsed,
-						)
-							? -1
-							: parsed;
-						await this.plugin.saveSettings();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName('Shift for exact value')
-			.setDesc('By default only simplify answer without removing accuracy. And require shift to get a value')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.shiftForExact)
-				.onChange(async (value) => {
-					this.plugin.settings.shiftForExact = value;
-					await this.plugin.saveSettings();
-				}));
-
-
-
+	getSettingDefinitions() {
+		return [
+			{
+				name: 'Calculation trigger string',
+				desc: 'The string that triggers calculation.',
+				control: { type: 'text', key: 'calculationTriggerString' },
+			},
+			{
+				name: 'Approximation trigger string',
+				desc: 'The string that triggers approximation.',
+				control: { type: 'text', key: 'approxCalculationTriggerString' },
+			},
+			{
+				name: 'Approximation precision',
+				desc: 'The precision used when approximating (-1 for max).',
+				control: { type: 'number', key: 'approxDecimalPrecision', min: -1 },
+			},
+			{
+				name: 'Shift for Simplification',
+				desc: 'Toggle between using shift to show only simplified answer and full answer e.g. (leaving sin(0.234) as is and trying to stick to whole numbers)',
+				control: { type: 'toggle', key: 'shiftForExact' },
+			},
+			]
 	}
 }
