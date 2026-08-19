@@ -6,6 +6,7 @@ import {
 	RustCalcSettings,
 	RustCalcSettingTab,
 } from './settings';
+import {ResultWidget} from "./widget";
 
 export default class RustCalcPlugin extends Plugin {
 	static INSTANCE: RustCalcPlugin;
@@ -17,6 +18,21 @@ export default class RustCalcPlugin extends Plugin {
 
 		this.addSettingTab(new RustCalcSettingTab(this.app, this));
 		this.registerEditorExtension([rustCalcHintRenderer]);
+
+		this.addCommand({
+			id: 'complete-calculation',
+			name: 'Complete calculation',
+			hotkeys: [
+				{
+					modifiers: [],
+					key: 'Tab',
+				},
+			],
+			callback: () => {
+				ResultWidget.activeWidget?.insertToDOM();
+			},
+		});
+
 
 		RustCalcPlugin.INSTANCE = this;
 	}

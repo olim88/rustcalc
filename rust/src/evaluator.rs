@@ -51,7 +51,8 @@ pub fn evaluate_latex_impl(request: &EvaluateRequest) -> Result<String, String> 
     let expr = parse_latex_lenient(formula);
 
     if let Some(expression) = expr.expression {
-        let output = evaluate(expression, request.shift_for_exact, &vars)?;
+		let exact = if request.approximate {false} else {request.shift_for_exact};
+        let output = evaluate(expression, exact, &vars)?;
         let output_string = output.to_latex();
 
         return Ok(round_expression(request, output_string));

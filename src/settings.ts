@@ -6,7 +6,6 @@ export interface RustCalcSettings {
 	calculationTriggerString: string;
 	approxCalculationTriggerString: string;
 	approxDecimalPrecision: number;
-	completionTriggerKey: string;
 	shiftForExact: boolean;
 }
 
@@ -14,7 +13,6 @@ export const DEFAULT_SETTINGS: RustCalcSettings = {
 	calculationTriggerString: '=',
 	approxCalculationTriggerString: '\\approx',
 	approxDecimalPrecision: 3,
-	completionTriggerKey: 'Tab',
 	shiftForExact: true
 
 };
@@ -44,8 +42,8 @@ export class RustCalcSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Approximation precision',
-				desc: 'The precision used when approximating (-1 for max).',
-				control: { type: 'number', key: 'approxDecimalPrecision', min: -1 },
+				desc: 'The precision used when approximating',
+				control: { type: 'number', key: 'approxDecimalPrecision', min: 0 },
 			},
 			{
 				name: 'Shift for Simplification',

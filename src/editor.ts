@@ -14,9 +14,39 @@ import RustCalcPlugin from './main';
 import {ResultWidget} from './widget';
 
 class RustCalcHintRenderer implements PluginValue {
+	shiftPressed = false;
+	private view: EditorView;
+	private keydownHandler = (event: KeyboardEvent) => {
+		if (event.key === 'Shift' && !this.shiftPressed) {
+			this.shiftPressed = true;
+			this.view.dispatch({});
+		}
+	};
+
+	private keyupHandler = (event: KeyboardEvent) => {
+		if (event.key === 'Shift') {
+			this.shiftPressed = false;
+			this.view.dispatch({});
+		}
+	};
+
+	private blurHandler = () => {
+		if (this.shiftPressed) {
+			this.shiftPressed = false;
+			this.view.dispatch({});
+		}
+	};
+
 	decorations: DecorationSet;
 
+
 	constructor(view: EditorView) {
+		this.view = view;
+
+		view.dom.addEventListener('keydown', this.keydownHandler);
+		view.dom.addEventListener('keyup', this.keyupHandler);
+		window.addEventListener('blur', this.blurHandler);
+
 		this.decorations = this.buildDecorations(view);
 	}
 
@@ -29,6 +59,9 @@ class RustCalcHintRenderer implements PluginValue {
 
 	buildDecorations(view: EditorView): DecorationSet {
 		const builder = new RangeSetBuilder<Decoration>();
+
+		// Capture this before entering the syntax tree iterator.
+		const shiftPressed = this.shiftPressed;
 
 		for (const {from, to} of view.visibleRanges) {
 			const cursorPos = view.state.selection.main.from;
@@ -94,7 +127,7 @@ class RustCalcHintRenderer implements PluginValue {
 							previousLines,
 							approximate: isApproximation,
 							precision: settings.approxDecimalPrecision,
-							shiftForExact: settings.shiftForExact
+							shiftForExact: ((settings.shiftForExact)? shiftPressed : !shiftPressed),
 						});
 
 						let insertIndex =
@@ -120,6 +153,7 @@ class RustCalcHintRenderer implements PluginValue {
 
 		return builder.finish();
 	}
+
 }
 /**
  * Splits `str` on matches of `regex`, but only when the match occurs
@@ -174,6 +208,7 @@ function nodeTagsIncludes(nodeTypeName: string, tag: string): boolean {
 }
 
 const pluginSpec: PluginSpec<RustCalcHintRenderer> = {
+
 	decorations: (value: RustCalcHintRenderer) => value.decorations,
 };
 
