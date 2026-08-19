@@ -2,8 +2,6 @@ import { EditorView, WidgetType } from '@codemirror/view';
 import RustCalcPlugin from './main';
 
 export class ResultWidget extends WidgetType {
-
-	static activeWidget: ResultWidget | null = null;
 	insertLocation!: number;
 	resultText!: string;
 	keyListener!: (event: KeyboardEvent) => void;
@@ -24,8 +22,17 @@ export class ResultWidget extends WidgetType {
 		this.insertLocation = this.index;
 		this.resultText = this.text;
 
-		ResultWidget.activeWidget = this;
-
+		this.keyListener = (event) => {
+			if (
+				event.key !==
+				RustCalcPlugin.INSTANCE.settings.completionTriggerKey
+			) {
+				return;
+			}
+			event.preventDefault();
+			this.insertToDOM();
+		};
+		activeDocument.addEventListener('keydown', this.keyListener, true);
 		div.onclick = () => {
 			this.insertToDOM();
 		};
@@ -35,10 +42,7 @@ export class ResultWidget extends WidgetType {
 	}
 
 	destroy(dom: HTMLElement): void {
-		if (ResultWidget.activeWidget === this) {
-			ResultWidget.activeWidget = null;
-		}
-
+		activeDocument.removeEventListener('keydown', this.keyListener, true);
 		dom.remove();
 	}
 

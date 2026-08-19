@@ -6,6 +6,7 @@ export interface RustCalcSettings {
 	calculationTriggerString: string;
 	approxCalculationTriggerString: string;
 	approxDecimalPrecision: number;
+	completionTriggerKey: string;
 	shiftForExact: boolean;
 }
 
@@ -13,6 +14,7 @@ export const DEFAULT_SETTINGS: RustCalcSettings = {
 	calculationTriggerString: '=',
 	approxCalculationTriggerString: '\\approx',
 	approxDecimalPrecision: 3,
+	completionTriggerKey: 'Tab',
 	shiftForExact: true
 
 };
@@ -49,6 +51,11 @@ export class RustCalcSettingTab extends PluginSettingTab {
 				name: 'Shift for Simplification',
 				desc: 'Toggle between using shift to show only simplified answer and full answer e.g. (leaving sin(0.234) as is and trying to stick to whole numbers)',
 				control: { type: 'toggle', key: 'shiftForExact' },
+			},
+			{
+				name: 'Completion Trigger Key',
+				desc: 'Key used to complete equation',
+				control: { type: 'text', key: 'completionTriggerKey' },
 			},
 			]
 	}
