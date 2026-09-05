@@ -70,13 +70,12 @@ class RustCalcHintRenderer implements PluginValue {
 			let previousLines: string[] = [];
 
 			syntaxTree(view.state).iterate({
-				from,
-				to,
+				to, from,
 				enter(node) {
 					if (nodeTagsIncludes(node.type.name, 'formatting-math-begin')) {
 						mathBegin = node.to;
 					}
-					if (
+					else if (
 						nodeTagsIncludes(node.type.name, 'formatting-math-end') &&
 						mathBegin != null
 					) {
